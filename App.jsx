@@ -17,7 +17,7 @@ import {
  * - XL CINEMA ENGINE (YouTube)
  * - DYNAMIC CPU/NETWORK MONITORING
  * - PLAN-BASED VIDEO DURATION LIMITER (max 5 min si excede)
- * - ADMIN CAN ASSIGN PLANS TO SERVERS
+ * - ADMIN CAN ASSIGN PLANS TO SERVERS WITH 25s UPDATE DELAY
  * ============================================================================
  */
 
@@ -173,7 +173,10 @@ export default function YouTubeNoADs() {
     // admin server lookup
     currentLookupId: null,
     serverDetails: null,
-    serverOwnerEmail: null
+    serverOwnerEmail: null,
+    // plan update UI
+    updatingPlan: false,
+    updateCountdown: 25,
   });
 
   // Métricas dinámicas forzadas a estado para re-render
@@ -181,7 +184,7 @@ export default function YouTubeNoADs() {
   useEffect(() => {
     const interval = setInterval(() => {
       setMetrics({ cpu: cpuUsagePercent, network: networkUsageTotal });
-    }, 500);
+    }, 5000); // actualizado cada 5 segundos
     return () => clearInterval(interval);
   }, []);
 
@@ -404,8 +407,7 @@ export default function YouTubeNoADs() {
       const userSnap = await get(ref(db, `serverToUser/${serverIdInput}`));
       let ownerEmail = null;
       if (userSnap.exists()) {
-        ownerEmail = userSnap.val(); // es la clave sanitizada
-        // Podríamos intentar recuperar el email original desde la whitelist o similar, pero es suficiente la clave
+        ownerEmail = userSnap.val();
       }
       setUi(p => ({...p, serverDetails: details, currentLookupId: serverIdInput, serverOwnerEmail: ownerEmail}));
       pushNotification(`Servidor ${serverIdInput} encontrado`, "success");
@@ -415,24 +417,46 @@ export default function YouTubeNoADs() {
     }
   };
 
-  const assignPlanToServer = async (planKey) => {
+  const startPlanUpdate = (planKey) => {
     if (!ui.serverOwnerEmail) {
       pushNotification("No se pudo determinar el dueño del servidor", "error");
       return;
     }
-    const emailKey = ui.serverOwnerEmail;
-    await set(ref(db, `userPlans/${emailKey}`), planKey);
-    pushNotification(`Plan ${ALEX_CONFIG.PLANS[planKey].name} asignado al servidor`, "success");
-    addLog(`ADMIN: Asignó plan ${planKey} al servidor ${ui.currentLookupId}`);
-    // Refrescar datos del usuario admin no necesario, pero si coincide con el admin logueado, actualizar
-    if (user && sanitizeEmail(user.email) === emailKey) {
-      setUi(p => ({
-        ...p,
-        currentPlan: planKey,
-        planData: ALEX_CONFIG.PLANS[planKey]
-      }));
-    }
+    // Iniciar el proceso de actualización con contador de 25 segundos
+    setUi(p => ({ ...p, updatingPlan: true, updateCountdown: 25, selectedPlanForUpdate: planKey }));
   };
+
+  // Efecto para manejar la cuenta atrás de 25 segundos
+  useEffect(() => {
+    if (!ui.updatingPlan) return;
+    if (ui.updateCountdown <= 0) {
+      // Realizar la actualización real
+      const planKey = ui.selectedPlanForUpdate;
+      const emailKey = ui.serverOwnerEmail;
+      const updatePlan = async () => {
+        await set(ref(db, `userPlans/${emailKey}`), planKey);
+        pushNotification(`Plan ${ALEX_CONFIG.PLANS[planKey].name} asignado correctamente`, "success");
+        addLog(`ADMIN: Plan ${planKey} aplicado a servidor ${ui.currentLookupId}`);
+        if (user && sanitizeEmail(user.email) === emailKey) {
+          setUi(p => ({
+            ...p,
+            currentPlan: planKey,
+            planData: ALEX_CONFIG.PLANS[planKey],
+            updatingPlan: false,
+            selectedPlanForUpdate: null
+          }));
+        } else {
+          setUi(p => ({ ...p, updatingPlan: false, selectedPlanForUpdate: null }));
+        }
+      };
+      updatePlan();
+      return;
+    }
+    const timer = setTimeout(() => {
+      setUi(p => ({ ...p, updateCountdown: p.updateCountdown - 1 }));
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [ui.updatingPlan, ui.updateCountdown]);
 
   const addLog = (msg) => {
     const newLog = push(ref(db, 'logs'));
@@ -769,6 +793,18 @@ export default function YouTubeNoADs() {
         </>
       )}
 
+      {/* OVERLAY DE ACTUALIZACIÓN DE PLAN (25 segundos) */}
+      {ui.updatingPlan && (
+        <div style={Styles.ModalOverlay}>
+          <div style={Styles.UpdateCard}>
+            <h2 style={{color: ui.theme, fontSize: '32px'}}>ACTUALIZANDO PLAN</h2>
+            <div className="alex-loader" style={{margin: '30px auto'}}></div>
+            <p style={{fontSize: '48px', fontWeight: 'bold', color: '#fff'}}>{ui.updateCountdown}s</p>
+            <p style={{color: '#888', marginTop: '10px'}}>Aplicando {ALEX_CONFIG.PLANS[ui.selectedPlanForUpdate]?.name} al servidor {ui.currentLookupId}...</p>
+          </div>
+        </div>
+      )}
+
       {/* MODAL DE PLANES */}
       {ui.showPlans && (
         <div style={Styles.ModalOverlay} onClick={() => setUi(p => ({...p, showPlans: false}))}>
@@ -898,12 +934,16 @@ export default function YouTubeNoADs() {
                       <div style={{marginTop: '25px'}}>
                         <h4>Asignar plan al servidor</h4>
                         <div style={{display: 'flex', gap: '10px', alignItems: 'center'}}>
-                          <select id="planSelector" style={Styles.AdmInput}>
+                          <select id="planSelector" style={Styles.AdmInput} disabled={ui.updatingPlan}>
                             {Object.keys(ALEX_CONFIG.PLANS).map(k => (
                               <option key={k} value={k}>{ALEX_CONFIG.PLANS[k].name}</option>
                             ))}
                           </select>
-                          <button onClick={() => assignPlanToServer(document.getElementById('planSelector').value)} style={Styles.AddBtn}>
+                          <button 
+                            onClick={() => startPlanUpdate(document.getElementById('planSelector').value)} 
+                            style={Styles.AddBtn}
+                            disabled={ui.updatingPlan}
+                          >
                             ACTUALIZAR PLAN
                           </button>
                         </div>
@@ -992,6 +1032,9 @@ const Styles = {
   PlanPrice: { fontSize: '24px', color: '#ff0000', marginBottom: '15px' },
   PlanFeatures: { listStyle: 'none', padding: 0, margin: 0, textAlign: 'left', color: '#aaa', fontSize: '14px', lineHeight: '1.8' },
   CurrentPlanBadge: { position: 'absolute', top: '-10px', right: '-10px', background: '#ff0000', color: '#fff', padding: '5px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 'bold' },
+
+  // UPDATE OVERLAY
+  UpdateCard: { background: '#0a0a0a', padding: '60px', borderRadius: '40px', border: '1px solid #222', textAlign: 'center', maxWidth: '500px', width: '100%' },
 
   // ADMIN UI
   CommandCenter: { position: 'fixed', inset: '30px', background: '#050505', borderRadius: '40px', zIndex: 1000, display: 'flex', flexDirection: 'column', border: '1px solid #333', boxShadow: '0 0 200px #000' },
