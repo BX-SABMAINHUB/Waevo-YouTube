@@ -17,7 +17,7 @@ import {
  * - DB SANITIZATION LAYER
  * - XL CINEMA ENGINE (YouTube)
  * - PANIC PROTOCOL V5
- * - SERVER SETTINGS & ADMIN SERVER LOOKUP
+ * - SERVER SETTINGS, CONSOLE, PLANS
  * ============================================================================
  */
 
@@ -47,6 +47,36 @@ const ALEX_CONFIG = {
     restrictedMode: false,
     quality: 'auto',
     notifications: true
+  },
+  PLANS: {
+    free: {
+      name: 'Free',
+      price: '0,00 €',
+      networkMB: 25,
+      cpuPercent: 25,
+      settingsLimited: true
+    },
+    starter: {
+      name: 'Starter',
+      price: '0,50 €',
+      networkMB: 50,
+      cpuPercent: 45,
+      settingsLimited: false
+    },
+    amateur: {
+      name: 'Amateur',
+      price: '1,50 €',
+      networkMB: 150,
+      cpuPercent: 75,
+      settingsLimited: false
+    },
+    completo: {
+      name: 'Completo',
+      price: '4,50 €',
+      networkMB: 512,
+      cpuPercent: 100,
+      settingsLimited: false
+    }
   }
 };
 
@@ -55,6 +85,41 @@ const app = initializeApp(ALEX_CONFIG.FIREBASE);
 const db = getDatabase(app);
 const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
+
+// --- GLOBALES PARA MONITOREO REAL ---
+let frameTimes = [];
+let lastFrameTime = performance.now();
+let networkUsageTotal = 0;
+let cpuUsagePercent = 0;
+
+function trackFrame() {
+  const now = performance.now();
+  const delta = now - lastFrameTime;
+  frameTimes.push(delta);
+  if (frameTimes.length > 60) frameTimes.shift();
+  const avgFrameTime = frameTimes.reduce((a,b) => a+b, 0) / frameTimes.length;
+  // Consideramos 16.67ms como 100% de presupuesto (60fps)
+  cpuUsagePercent = Math.min(100, (avgFrameTime / 16.67) * 100);
+  lastFrameTime = now;
+  requestAnimationFrame(trackFrame);
+}
+
+function accumulateNetworkUsage() {
+  // Sumamos transferSize de todos los recursos cargados por el navegador
+  const resources = performance.getEntriesByType('resource');
+  let total = 0;
+  resources.forEach(r => {
+    if (r.transferSize) total += r.transferSize;
+  });
+  networkUsageTotal = total / (1024 * 1024); // MB
+}
+
+// Iniciamos el monitoreo de frames
+if (typeof window !== 'undefined') {
+  requestAnimationFrame(trackFrame);
+  // Actualizamos network cada 2 segundos
+  setInterval(accumulateNetworkUsage, 2000);
+}
 
 export default function YouTubeNoADs() {
   // ==========================================
@@ -92,11 +157,14 @@ export default function YouTubeNoADs() {
     adminTab: 'users',
     notifications: [],
     theme: '#ff0000',
-    // Server settings panel
     showServerSettings: false,
+    showConsole: false,
+    showPlans: false,
     serverId: '',
     serverSettings: { ...ALEX_CONFIG.DEFAULT_SERVER_SETTINGS },
-    serverSettingsLoading: true
+    serverSettingsLoading: true,
+    currentPlan: 'free',
+    planData: ALEX_CONFIG.PLANS.free
   });
 
   // --- REFS PARA DOMINIO Y PÁNICO ---
@@ -105,7 +173,7 @@ export default function YouTubeNoADs() {
   const adminServerIdRef = useRef(null);
 
   // ==========================================
-  // 1. ENGINE: SANITIZACIÓN DE DB (FIX TOTAL)
+  // 1. ENGINE: SANITIZACIÓN DE DB
   // ==========================================
   const sanitizeEmail = (email) => {
     if (!email || typeof email !== 'string') return "invalid_user";
@@ -144,10 +212,10 @@ export default function YouTubeNoADs() {
     syncDatabase();
   }, []);
 
-  // Efecto para cargar datos del servidor del usuario
+  // Cargar datos del usuario cuando esté autenticado y con acceso
   useEffect(() => {
     if (!user || !accessGranted) return;
-    loadUserServerData();
+    loadUserData();
   }, [user, accessGranted]);
 
   const syncDatabase = () => {
@@ -189,25 +257,26 @@ export default function YouTubeNoADs() {
   };
 
   // ==========================================
-  // 3. ENGINE: CARGA DE DATOS DEL SERVIDOR DEL USUARIO
+  // 3. ENGINE: CARGA DE DATOS DEL USUARIO (SERVIDOR, PLAN)
   // ==========================================
-  const loadUserServerData = async () => {
+  const loadUserData = async () => {
     if (!user) return;
     const emailKey = sanitizeEmail(user.email);
-    const userServerRef = ref(db, `userServers/${emailKey}`);
     setUi(p => ({ ...p, serverSettingsLoading: true }));
-    
+
     try {
-      const snap = await get(userServerRef);
+      // 1. Server ID
+      const userServerRef = ref(db, `userServers/${emailKey}`);
+      const serverSnap = await get(userServerRef);
       let serverId;
-      if (snap.exists()) {
-        serverId = snap.val().serverId;
+      if (serverSnap.exists()) {
+        serverId = serverSnap.val().serverId;
       } else {
         serverId = generateServerId();
         await set(userServerRef, { serverId, email: user.email });
       }
-      
-      // Cargar configuración del servidor
+
+      // 2. Configuración del servidor
       const serverSettingsRef = ref(db, `servers/${serverId}`);
       const settingsSnap = await get(serverSettingsRef);
       let settings;
@@ -217,15 +286,28 @@ export default function YouTubeNoADs() {
         settings = { ...ALEX_CONFIG.DEFAULT_SERVER_SETTINGS };
         await set(serverSettingsRef, settings);
       }
-      
+
+      // 3. Plan del usuario
+      const planRef = ref(db, `userPlans/${emailKey}`);
+      const planSnap = await get(planRef);
+      let currentPlan = 'free';
+      if (planSnap.exists()) {
+        currentPlan = planSnap.val();
+      } else {
+        await set(planRef, 'free');
+      }
+
       setUi(p => ({
         ...p,
         serverId,
         serverSettings: settings,
-        serverSettingsLoading: false
+        serverSettingsLoading: false,
+        currentPlan,
+        planData: ALEX_CONFIG.PLANS[currentPlan] || ALEX_CONFIG.PLANS.free
       }));
+
     } catch (err) {
-      console.error("Error loading server data:", err);
+      console.error("Error loading user data:", err);
       setUi(p => ({ ...p, serverSettingsLoading: false }));
     }
   };
@@ -241,6 +323,11 @@ export default function YouTubeNoADs() {
   };
 
   const updateServerSetting = async (key, value) => {
+    // Verificar si el plan permite ajustes completos
+    if (ui.planData.settingsLimited && key !== 'theme') {
+      pushNotification("Tu plan Free tiene ajustes limitados. Mejora para desbloquear.", "error");
+      return;
+    }
     const newSettings = { ...ui.serverSettings, [key]: value };
     setUi(p => ({ ...p, serverSettings: newSettings }));
     if (ui.serverId) {
@@ -262,7 +349,7 @@ export default function YouTubeNoADs() {
   }, []);
 
   // ==========================================
-  // 5. ENGINE: CONTROL ADMINISTRATIVO (INCLUYE SERVIDORES)
+  // 5. ENGINE: CONTROL ADMINISTRATIVO
   // ==========================================
   const handleAdminAuth = (e) => {
     e.preventDefault();
@@ -393,7 +480,7 @@ export default function YouTubeNoADs() {
         ))}
       </div>
 
-      {/* BOTÓN DE PÁNICO (MASTER) */}
+      {/* BOTÓN DE PÁNICO */}
       <button onClick={triggerPanic} style={Styles.PanicButton}>PÁNICO</button>
 
       {/* FLUJO DE LOGIN / DASHBOARD */}
@@ -403,12 +490,17 @@ export default function YouTubeNoADs() {
             <h1 style={Styles.MainTitle}>YouTube-NoADs <span style={{color: ui.theme}}>ULTRA</span></h1>
             <p style={Styles.VersionText}>V {ALEX_CONFIG.API.VERSION}</p>
 
-            <div style={{margin: '50px 0'}}>
+            <div style={{margin: '50px 0', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px'}}>
               {!user ? (
-                <button onClick={() => signInWithPopup(auth, googleProvider)} style={Styles.GoogleBtn}>
-                  <img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" width="20" alt="G" />
-                  ENTRAR CON GOOGLE
-                </button>
+                <div style={{display: 'flex', gap: '15px'}}>
+                  <button onClick={() => signInWithPopup(auth, googleProvider)} style={Styles.GoogleBtn}>
+                    <img src="https://upload.wikimedia.org/wikipedia/commons/5/53/Google_%22G%22_Logo.svg" width="20" alt="G" />
+                    ENTRAR CON GOOGLE
+                  </button>
+                  <button onClick={() => setUi(p => ({...p, showPlans: true}))} style={Styles.PlansBtn}>
+                    VER PLANES
+                  </button>
+                </div>
               ) : (
                 <div style={Styles.PendingBox}>
                   <p>HOLA, {user.displayName}</p>
@@ -437,16 +529,22 @@ export default function YouTubeNoADs() {
 
             <div style={Styles.NavTabs}>
               <button 
-                onClick={() => setUi(p => ({...p, mode: 'youtube', showServerSettings: false}))}
-                style={ui.mode === 'youtube' && !ui.showServerSettings ? {...Styles.Tab, background: ui.theme, color: '#fff'} : Styles.Tab}
+                onClick={() => setUi(p => ({...p, mode: 'youtube', showServerSettings: false, showConsole: false}))}
+                style={!ui.showServerSettings && !ui.showConsole ? {...Styles.Tab, background: ui.theme, color: '#fff'} : Styles.Tab}
               >
                 YOUTUBE
               </button>
               <button 
-                onClick={() => setUi(p => ({...p, mode: 'youtube', showServerSettings: true}))}
+                onClick={() => setUi(p => ({...p, showServerSettings: true, showConsole: false}))}
                 style={ui.showServerSettings ? {...Styles.Tab, background: ui.theme, color: '#fff'} : Styles.Tab}
               >
                 SERVER SETTINGS
+              </button>
+              <button 
+                onClick={() => setUi(p => ({...p, showConsole: true, showServerSettings: false}))}
+                style={ui.showConsole ? {...Styles.Tab, background: ui.theme, color: '#fff'} : Styles.Tab}
+              >
+                CONSOLE
               </button>
             </div>
 
@@ -470,7 +568,7 @@ export default function YouTubeNoADs() {
             {ui.loading && <div className="alex-loader" style={{margin: '50px auto'}}></div>}
 
             {/* MODO YOUTUBE */}
-            {!ui.showServerSettings && (
+            {!ui.showServerSettings && !ui.showConsole && (
               <>
                 {!ui.activeMedia ? (
                   <div style={Styles.MediaGrid}>
@@ -573,8 +671,77 @@ export default function YouTubeNoADs() {
                 )}
               </div>
             )}
+
+            {/* MODO CONSOLE */}
+            {ui.showConsole && (
+              <div style={Styles.ConsolePanel}>
+                <h2 style={Styles.SettingsTitle}>📊 CONSOLE DE RENDIMIENTO</h2>
+                <p style={{color: '#888', marginBottom: '30px'}}>Plan actual: <strong style={{color: ui.theme}}>{ui.planData.name} ({ui.planData.price})</strong></p>
+                
+                <div style={Styles.MetricBox}>
+                  <div style={Styles.MetricHeader}>
+                    <span>🧠 Uso de CPU</span>
+                    <span>{Math.min(cpuUsagePercent, ui.planData.cpuPercent).toFixed(1)}% / {ui.planData.cpuPercent}%</span>
+                  </div>
+                  <div style={Styles.ProgressBarBg}>
+                    <div style={{
+                      ...Styles.ProgressBarFill,
+                      width: `${Math.min((cpuUsagePercent / ui.planData.cpuPercent) * 100, 100)}%`,
+                      background: cpuUsagePercent > ui.planData.cpuPercent ? '#ff0000' : '#00ff41'
+                    }}></div>
+                  </div>
+                </div>
+
+                <div style={Styles.MetricBox}>
+                  <div style={Styles.MetricHeader}>
+                    <span>📡 Network (datos transferidos)</span>
+                    <span>{networkUsageTotal.toFixed(2)} MB / {ui.planData.networkMB} MB</span>
+                  </div>
+                  <div style={Styles.ProgressBarBg}>
+                    <div style={{
+                      ...Styles.ProgressBarFill,
+                      width: `${Math.min((networkUsageTotal / ui.planData.networkMB) * 100, 100)}%`,
+                      background: networkUsageTotal > ui.planData.networkMB ? '#ff0000' : '#00ff41'
+                    }}></div>
+                  </div>
+                </div>
+
+                <div style={{marginTop: '30px', color: '#666', fontSize: '12px'}}>
+                  * El uso de CPU se mide en tiempo real basado en el renderizado.<br/>
+                  * El tráfico de red incluye todos los recursos descargados por la app.
+                </div>
+              </div>
+            )}
           </main>
         </>
+      )}
+
+      {/* MODAL DE PLANES */}
+      {ui.showPlans && (
+        <div style={Styles.ModalOverlay} onClick={() => setUi(p => ({...p, showPlans: false}))}>
+          <div style={Styles.PlansCard} onClick={e => e.stopPropagation()}>
+            <h2 style={Styles.PlansTitle}>PLANES DISPONIBLES</h2>
+            <p style={{color: '#888', marginBottom: '30px'}}>Selecciona el plan que mejor se adapte a ti. Para contratar, acude a nuestro servidor de soporte.</p>
+            <div style={Styles.PlansGrid}>
+              {Object.entries(ALEX_CONFIG.PLANS).map(([key, plan]) => (
+                <div key={key} style={{
+                  ...Styles.PlanItem,
+                  borderColor: key === ui.currentPlan ? ui.theme : '#222'
+                }}>
+                  <div style={Styles.PlanName}>{plan.name}</div>
+                  <div style={Styles.PlanPrice}>{plan.price}</div>
+                  <ul style={Styles.PlanFeatures}>
+                    <li>{plan.networkMB} MB de red</li>
+                    <li>{plan.cpuPercent}% de CPU</li>
+                    <li>{plan.settingsLimited ? 'Ajustes limitados' : 'Ajustes completos'}</li>
+                  </ul>
+                  {key === ui.currentPlan && <div style={Styles.CurrentPlanBadge}>PLAN ACTUAL</div>}
+                </div>
+              ))}
+            </div>
+            <button onClick={() => setUi(p => ({...p, showPlans: false}))} style={Styles.CancelBtn}>CERRAR</button>
+          </div>
+        </div>
       )}
 
       {/* MODAL DE LOGIN ADMIN */}
@@ -657,7 +824,6 @@ export default function YouTubeNoADs() {
                 ))}
               </div>
             ) : (
-              /* PESTAÑA SERVIDORES (ADMIN) */
               <div style={Styles.AdminServerTab}>
                 <h3>🔍 CONSULTAR SERVIDOR POR ID</h3>
                 <div style={Styles.AdminActions}>
@@ -706,6 +872,7 @@ const Styles = {
   MainTitle: { fontSize: '60px', fontWeight: '900', margin: 0, letterSpacing: '-2px' },
   VersionText: { fontSize: '10px', color: '#333', letterSpacing: '5px', marginTop: '10px' },
   GoogleBtn: { display: 'flex', alignItems: 'center', gap: '15px', background: '#fff', color: '#000', border: 'none', padding: '20px 40px', borderRadius: '15px', fontWeight: '900', cursor: 'pointer', transition: '0.3s' },
+  PlansBtn: { background: 'none', border: '2px solid #ff0000', color: '#ff0000', padding: '20px 40px', borderRadius: '15px', fontWeight: '900', cursor: 'pointer', fontSize: '16px', transition: '0.3s' },
   AlexBtn: { background: 'none', border: '1px solid #222', color: '#444', padding: '12px 25px', borderRadius: '10px', cursor: 'pointer', fontSize: '12px' },
   PendingBox: { background: '#0a0a0a', padding: '20px', borderRadius: '20px', border: '1px solid #111' },
   LogoutMini: { background: 'none', border: 'none', color: '#555', cursor: 'pointer', textDecoration: 'underline', fontSize: '11px' },
@@ -748,6 +915,23 @@ const Styles = {
   SettingsGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '25px', marginBottom: '40px' },
   SettingItem: { display: 'flex', flexDirection: 'column', gap: '10px', background: '#0a0a0a', padding: '20px', borderRadius: '15px' },
   ServerIdBox: { textAlign: 'center', padding: '25px', background: '#000', borderRadius: '15px', border: '1px solid #222', marginTop: '20px' },
+
+  // CONSOLE
+  ConsolePanel: { maxWidth: '800px', margin: '0 auto', padding: '30px', background: '#050505', borderRadius: '30px', border: '1px solid #111' },
+  MetricBox: { marginBottom: '30px' },
+  MetricHeader: { display: 'flex', justifyContent: 'space-between', marginBottom: '10px', fontSize: '16px' },
+  ProgressBarBg: { height: '20px', background: '#1a1a1a', borderRadius: '10px', overflow: 'hidden' },
+  ProgressBarFill: { height: '100%', borderRadius: '10px', transition: 'width 0.5s ease' },
+
+  // PLANS
+  PlansCard: { background: '#0a0a0a', padding: '60px', borderRadius: '40px', border: '1px solid #222', maxWidth: '900px', width: '100%', textAlign: 'center' },
+  PlansTitle: { fontSize: '32px', marginBottom: '10px' },
+  PlansGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '20px', marginBottom: '30px' },
+  PlanItem: { background: '#111', border: '2px solid #222', borderRadius: '20px', padding: '25px', textAlign: 'center', position: 'relative' },
+  PlanName: { fontSize: '20px', fontWeight: '900', marginBottom: '10px' },
+  PlanPrice: { fontSize: '24px', color: '#ff0000', marginBottom: '15px' },
+  PlanFeatures: { listStyle: 'none', padding: 0, margin: 0, textAlign: 'left', color: '#aaa', fontSize: '14px', lineHeight: '1.8' },
+  CurrentPlanBadge: { position: 'absolute', top: '-10px', right: '-10px', background: '#ff0000', color: '#fff', padding: '5px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 'bold' },
 
   // ADMIN UI
   CommandCenter: { position: 'fixed', inset: '30px', background: '#050505', borderRadius: '40px', zIndex: 1000, display: 'flex', flexDirection: 'column', border: '1px solid #333', boxShadow: '0 0 200px #000' },
