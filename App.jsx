@@ -18,6 +18,7 @@ import {
  * - DYNAMIC CPU/NETWORK MONITORING
  * - PLAN-BASED VIDEO DURATION LIMITER (max 5 min si excede)
  * - ADMIN CAN ASSIGN PLANS TO SERVERS WITH 25s UPDATE DELAY
+ * - SHOWS CURRENT PLAN ON ADMIN SERVER LOOKUP
  * ============================================================================
  */
 
@@ -174,6 +175,7 @@ export default function YouTubeNoADs() {
     currentLookupId: null,
     serverDetails: null,
     serverOwnerEmail: null,
+    serverCurrentPlan: null, // nuevo
     // plan update UI
     updatingPlan: false,
     updateCountdown: 25,
@@ -406,10 +408,22 @@ export default function YouTubeNoADs() {
       // Buscar email del dueño
       const userSnap = await get(ref(db, `serverToUser/${serverIdInput}`));
       let ownerEmail = null;
+      let currentPlan = null;
       if (userSnap.exists()) {
         ownerEmail = userSnap.val();
+        // Obtener el plan actual de ese usuario
+        const planSnap = await get(ref(db, `userPlans/${ownerEmail}`));
+        if (planSnap.exists()) {
+          currentPlan = planSnap.val();
+        }
       }
-      setUi(p => ({...p, serverDetails: details, currentLookupId: serverIdInput, serverOwnerEmail: ownerEmail}));
+      setUi(p => ({
+        ...p, 
+        serverDetails: details, 
+        currentLookupId: serverIdInput, 
+        serverOwnerEmail: ownerEmail,
+        serverCurrentPlan: currentPlan
+      }));
       pushNotification(`Servidor ${serverIdInput} encontrado`, "success");
       addLog(`ADMIN: Consultó servidor ${serverIdInput}`);
     } else {
@@ -437,6 +451,8 @@ export default function YouTubeNoADs() {
         await set(ref(db, `userPlans/${emailKey}`), planKey);
         pushNotification(`Plan ${ALEX_CONFIG.PLANS[planKey].name} asignado correctamente`, "success");
         addLog(`ADMIN: Plan ${planKey} aplicado a servidor ${ui.currentLookupId}`);
+        // Actualizar también el plan mostrado en el lookup
+        setUi(p => ({ ...p, serverCurrentPlan: planKey }));
         if (user && sanitizeEmail(user.email) === emailKey) {
           setUi(p => ({
             ...p,
@@ -930,9 +946,14 @@ export default function YouTubeNoADs() {
                         </div>
                       ))}
                     </div>
+                    {ui.serverCurrentPlan && (
+                      <p style={{marginTop: '15px', color: '#aaa'}}>
+                        Plan actual del servidor: <strong style={{color: ui.theme}}>{ALEX_CONFIG.PLANS[ui.serverCurrentPlan]?.name || ui.serverCurrentPlan}</strong>
+                      </p>
+                    )}
                     {ui.serverOwnerEmail && (
                       <div style={{marginTop: '25px'}}>
-                        <h4>Asignar plan al servidor</h4>
+                        <h4>Mejorar plan del servidor</h4>
                         <div style={{display: 'flex', gap: '10px', alignItems: 'center'}}>
                           <select id="planSelector" style={Styles.AdmInput} disabled={ui.updatingPlan}>
                             {Object.keys(ALEX_CONFIG.PLANS).map(k => (
@@ -944,7 +965,7 @@ export default function YouTubeNoADs() {
                             style={Styles.AddBtn}
                             disabled={ui.updatingPlan}
                           >
-                            ACTUALIZAR PLAN
+                            MEJORAR PLAN
                           </button>
                         </div>
                       </div>
