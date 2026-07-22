@@ -14,11 +14,12 @@ import {
  * ============================================================================
  * - AUTH PERSISTENCE ENGINE
  * - DB SANITIZATION LAYER
- * - XL CINEMA ENGINE (YouTube)
+ * - XL CINEMA ENGINE (YouTube + Shorts)
  * - DYNAMIC CPU/NETWORK MONITORING
  * - PLAN-BASED VIDEO DURATION LIMITER (max 5 min si excede)
  * - ADMIN CAN ASSIGN PLANS TO EMAILS (WITH 25s UPDATE DELAY)
  * - CONSOLE WITH GRAPHS, TERMINAL & FILES (package.json)
+ * - SHORTS (activables desde settings, swipe vertical)
  * ============================================================================
  */
 
@@ -45,7 +46,8 @@ const ALEX_CONFIG = {
     region: 'ES',
     restrictedMode: false,
     quality: 'auto',
-    notifications: true
+    notifications: true,
+    enableShorts: false // nueva opción
   },
   PLANS: {
     free: {
@@ -205,6 +207,9 @@ export default function YouTubeNoADs() {
     // plan update UI
     updatingPlan: false,
     updateCountdown: 25,
+    // shorts
+    shortsVideos: [],
+    shortsLoading: false,
   });
 
   // Métricas dinámicas forzadas a estado para re-render
@@ -226,6 +231,7 @@ export default function YouTubeNoADs() {
   const videoRef = useRef(null);
   const adminPassRef = useRef(null);
   const adminServerIdRef = useRef(null);
+  const shortsContainerRef = useRef(null);
 
   // ==========================================
   // 1. ENGINE: SANITIZACIÓN DE DB
@@ -567,26 +573,71 @@ export default function YouTubeNoADs() {
   };
 
   // ==========================================
-  // 5. ENGINE: BÚSQUEDA Y REPRODUCCIÓN CON LÍMITES
+  // 5. ENGINE: BÚSQUEDA Y REPRODUCCIÓN (YOUTUBE Y SHORTS)
   // ==========================================
   const searchMedia = async (e) => {
     if (e) e.preventDefault();
     if (!ui.searchQuery) return;
-    setUi(p => ({...p, loading: true, results: []}));
+    if (ui.mode === 'shorts') {
+      // Búsqueda de shorts
+      setUi(p => ({...p, loading: true, shortsVideos: []}));
+      try {
+        const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=20&type=video&videoDuration=short&q=${encodeURIComponent(ui.searchQuery)}&key=${ALEX_CONFIG.API.YOUTUBE}`;
+        const response = await fetch(url);
+        const resData = await response.json();
+        if (resData.items) {
+          setUi(p => ({...p, shortsVideos: resData.items}));
+        } else {
+          pushNotification("NO SE ENCONTRARON SHORTS", "error");
+        }
+      } catch (err) {
+        pushNotification("ERROR DE CONEXIÓN API", "error");
+      }
+      setUi(p => ({...p, loading: false}));
+    } else {
+      // Búsqueda normal de YouTube
+      setUi(p => ({...p, loading: true, results: []}));
+      try {
+        const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=50&q=${encodeURIComponent(ui.searchQuery)}&type=video&key=${ALEX_CONFIG.API.YOUTUBE}`;
+        const response = await fetch(url);
+        const resData = await response.json();
+        if (resData.items) {
+          setUi(p => ({...p, results: resData.items, activeMedia: null}));
+        } else {
+          pushNotification("NO SE ENCONTRARON VIDEOS", "error");
+        }
+      } catch (err) {
+        pushNotification("ERROR DE CONEXIÓN API", "error");
+      }
+      setUi(p => ({...p, loading: false}));
+    }
+  };
+
+  const fetchTrendingShorts = async () => {
+    setUi(p => ({...p, shortsLoading: true, shortsVideos: []}));
     try {
-      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=50&q=${encodeURIComponent(ui.searchQuery)}&type=video&key=${ALEX_CONFIG.API.YOUTUBE}`;
+      // Obtener shorts populares (usando "shorts" como query y orden por relevancia)
+      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=10&type=video&videoDuration=short&q=shorts&order=viewCount&key=${ALEX_CONFIG.API.YOUTUBE}`;
       const response = await fetch(url);
-      const resData = await response.json();
-      if (resData.items) {
-        setUi(p => ({...p, results: resData.items, activeMedia: null}));
+      const data = await response.json();
+      if (data.items) {
+        setUi(p => ({...p, shortsVideos: data.items, shortsLoading: false}));
       } else {
-        pushNotification("NO SE ENCONTRARON VIDEOS", "error");
+        pushNotification("Error al cargar shorts", "error");
+        setUi(p => ({...p, shortsLoading: false}));
       }
     } catch (err) {
-      pushNotification("ERROR DE CONEXIÓN API", "error");
+      pushNotification("Error de red al cargar shorts", "error");
+      setUi(p => ({...p, shortsLoading: false}));
     }
-    setUi(p => ({...p, loading: false}));
   };
+
+  // Cargar shorts automáticamente al entrar en modo shorts
+  useEffect(() => {
+    if (ui.mode === 'shorts' && ui.shortsVideos.length === 0) {
+      fetchTrendingShorts();
+    }
+  }, [ui.mode]);
 
   const handleVideoSelect = async (videoId) => {
     // Bloquear si la consola no está activa
@@ -730,10 +781,19 @@ export default function YouTubeNoADs() {
             <div style={Styles.NavTabs}>
               <button 
                 onClick={() => setUi(p => ({...p, mode: 'youtube', showServerSettings: false, showConsole: false}))}
-                style={!ui.showServerSettings && !ui.showConsole ? {...Styles.Tab, background: ui.theme, color: '#fff'} : Styles.Tab}
+                style={ui.mode === 'youtube' && !ui.showServerSettings && !ui.showConsole ? {...Styles.Tab, background: ui.theme, color: '#fff'} : Styles.Tab}
               >
                 YOUTUBE
               </button>
+              {/* Botón SHORTS condicional */}
+              {ui.serverSettings.enableShorts && (
+                <button 
+                  onClick={() => setUi(p => ({...p, mode: 'shorts', showServerSettings: false, showConsole: false}))}
+                  style={ui.mode === 'shorts' ? {...Styles.Tab, background: ui.theme, color: '#fff'} : Styles.Tab}
+                >
+                  SHORTS
+                </button>
+              )}
               <button 
                 onClick={() => setUi(p => ({...p, showServerSettings: true, showConsole: false}))}
                 style={ui.showServerSettings ? {...Styles.Tab, background: ui.theme, color: '#fff'} : Styles.Tab}
@@ -751,7 +811,7 @@ export default function YouTubeNoADs() {
             <form onSubmit={searchMedia} style={Styles.SearchContainer}>
               <input 
                 style={Styles.SearchInput} 
-                placeholder="Buscar en YouTube..." 
+                placeholder={ui.mode === 'shorts' ? "Buscar shorts..." : "Buscar en YouTube..."} 
                 value={ui.searchQuery}
                 onChange={e => setUi(p => ({...p, searchQuery: e.target.value}))}
               />
@@ -769,7 +829,7 @@ export default function YouTubeNoADs() {
             {ui.loading && <div className="alex-loader" style={{margin: '50px auto'}}></div>}
 
             {/* MODO YOUTUBE */}
-            {!ui.showServerSettings && !ui.showConsole && (
+            {ui.mode === 'youtube' && !ui.showServerSettings && !ui.showConsole && (
               <>
                 {!ui.activeMedia ? (
                   <div style={Styles.MediaGrid}>
@@ -804,6 +864,35 @@ export default function YouTubeNoADs() {
                   </div>
                 )}
               </>
+            )}
+
+            {/* MODO SHORTS */}
+            {ui.mode === 'shorts' && !ui.showServerSettings && !ui.showConsole && (
+              <div style={Styles.ShortsContainer} ref={shortsContainerRef}>
+                {ui.shortsLoading ? (
+                  <div className="alex-loader" style={{margin: '50px auto'}}></div>
+                ) : ui.shortsVideos.length > 0 ? (
+                  <div style={Styles.ShortsScroll}>
+                    {ui.shortsVideos.map((v, idx) => (
+                      <div key={idx} style={Styles.ShortSlide}>
+                        <iframe 
+                          src={`https://www.youtube.com/embed/${v.id.videoId}?autoplay=1&mute=1&loop=1&playlist=${v.id.videoId}&modestbranding=1&rel=0`}
+                          style={Styles.ShortIframe}
+                          allow="autoplay; encrypted-media; picture-in-picture"
+                          frameBorder="0"
+                          allowFullScreen
+                        />
+                        <div style={Styles.ShortInfo}>
+                          <h4 style={Styles.CardTitle}>{v.snippet.title}</h4>
+                          <p style={Styles.CardSub}>{v.snippet.channelTitle}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p style={{color: '#555', textAlign: 'center', padding: '40px'}}>No se encontraron shorts. Intenta una búsqueda.</p>
+                )}
+              </div>
             )}
 
             {/* MODO SERVER SETTINGS */}
@@ -861,6 +950,14 @@ export default function YouTubeNoADs() {
                         <select value={ui.serverSettings.notifications} onChange={(e) => updateServerSetting('notifications', e.target.value === 'true')}>
                           <option value="true">Activadas</option>
                           <option value="false">Desactivadas</option>
+                        </select>
+                      </div>
+                      {/* Nuevo ajuste: Enable Shorts */}
+                      <div style={Styles.SettingItem}>
+                        <label>Enable Shorts</label>
+                        <select value={ui.serverSettings.enableShorts} onChange={(e) => updateServerSetting('enableShorts', e.target.value === 'true')}>
+                          <option value="true">Activado</option>
+                          <option value="false">Desactivado</option>
                         </select>
                       </div>
                     </div>
@@ -1153,7 +1250,7 @@ export default function YouTubeNoADs() {
 }
 
 // ==========================================
-// ARQUITECTURA DE ESTILOS
+// ARQUITECTURA DE ESTILOS (con Shorts)
 // ==========================================
 const Styles = {
   AppBody: { height: '100vh', display: 'flex', flexDirection: 'column', background: '#000', color: '#fff', fontFamily: "'Inter', sans-serif", overflow: 'hidden' },
@@ -1200,6 +1297,13 @@ const Styles = {
   CinemaFrame: { width: '100%', height: '82vh', background: '#000', borderRadius: '40px', overflow: 'hidden', position: 'relative', border: '1px solid #222' },
   IframeXL: { width: '100%', height: '100%', border: 'none' },
   CloseCinema: { position: 'absolute', top: '30px', right: '30px', background: '#ff0000', color: '#fff', border: 'none', padding: '15px 30px', borderRadius: '15px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 10px 30px rgba(0,0,0,0.5)' },
+
+  // SHORTS
+  ShortsContainer: { height: 'calc(100vh - 130px)', overflow: 'hidden' },
+  ShortsScroll: { height: '100%', overflowY: 'scroll', scrollSnapType: 'y mandatory', WebkitOverflowScrolling: 'touch' },
+  ShortSlide: { height: '100%', scrollSnapAlign: 'start', position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#000' },
+  ShortIframe: { width: '100%', height: '100%', border: 'none', objectFit: 'contain' },
+  ShortInfo: { position: 'absolute', bottom: '20px', left: '20px', right: '20px', background: 'rgba(0,0,0,0.7)', padding: '10px', borderRadius: '10px' },
 
   // SETTINGS PANEL
   SettingsPanel: { maxWidth: '800px', margin: '0 auto', padding: '30px', background: '#050505', borderRadius: '30px', border: '1px solid #111' },
