@@ -18,6 +18,7 @@ import {
  * - DYNAMIC CPU/NETWORK MONITORING
  * - PLAN-BASED VIDEO DURATION LIMITER (max 5 min si excede)
  * - ADMIN CAN ASSIGN PLANS TO SERVERS WITH 25s UPDATE DELAY
+ * - FIXED ADMIN DATABASE ERROR
  * ============================================================================
  */
 
@@ -117,7 +118,6 @@ if (typeof window !== 'undefined') {
 
 // --- FUNCIONES AUXILIARES ---
 function parseISO8601Duration(duration) {
-  // PT1H2M3S -> segundos
   const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
   if (!match) return 0;
   const hours = parseInt(match[1] || '0');
@@ -184,7 +184,7 @@ export default function YouTubeNoADs() {
   useEffect(() => {
     const interval = setInterval(() => {
       setMetrics({ cpu: cpuUsagePercent, network: networkUsageTotal });
-    }, 5000); // actualizado cada 5 segundos
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -293,7 +293,6 @@ export default function YouTubeNoADs() {
       } else {
         serverId = generateServerId();
         await set(userServerRef, { serverId, email: user.email });
-        // Guardar relación inversa para búsquedas admin
         await set(ref(db, `serverToUser/${serverId}`), emailKey);
       }
 
@@ -376,6 +375,10 @@ export default function YouTubeNoADs() {
     if (!email || !email.includes('@')) {
       return pushNotification("EMAIL NO VÁLIDO", "error");
     }
+    // Verificar que el usuario administrador está disponible
+    if (!user || !user.email) {
+      return pushNotification("Sesión no válida, vuelve a iniciar sesión", "error");
+    }
     const key = sanitizeEmail(email);
     const targetRef = ref(db, `${table}/${key}`);
     try {
@@ -393,8 +396,8 @@ export default function YouTubeNoADs() {
       }
       addLog(`ADMIN: ${action} en ${table} para ${email}`);
     } catch (err) {
-      console.error(err);
-      pushNotification("ERROR DE BASE DE DATOS", "error");
+      console.error("Database error:", err);
+      pushNotification("ERROR DE BASE DE DATOS: " + (err.message || err), "error");
     }
   };
 
@@ -403,7 +406,6 @@ export default function YouTubeNoADs() {
     const snap = await get(ref(db, `servers/${serverIdInput}`));
     if (snap.exists()) {
       const details = snap.val();
-      // Buscar email del dueño
       const userSnap = await get(ref(db, `serverToUser/${serverIdInput}`));
       let ownerEmail = null;
       if (userSnap.exists()) {
@@ -422,15 +424,12 @@ export default function YouTubeNoADs() {
       pushNotification("No se pudo determinar el dueño del servidor", "error");
       return;
     }
-    // Iniciar el proceso de actualización con contador de 25 segundos
     setUi(p => ({ ...p, updatingPlan: true, updateCountdown: 25, selectedPlanForUpdate: planKey }));
   };
 
-  // Efecto para manejar la cuenta atrás de 25 segundos
   useEffect(() => {
     if (!ui.updatingPlan) return;
     if (ui.updateCountdown <= 0) {
-      // Realizar la actualización real
       const planKey = ui.selectedPlanForUpdate;
       const emailKey = ui.serverOwnerEmail;
       const updatePlan = async () => {
@@ -490,7 +489,6 @@ export default function YouTubeNoADs() {
   };
 
   const handleVideoSelect = async (videoId) => {
-    // Obtener duración del vídeo
     try {
       const url = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${videoId}&key=${ALEX_CONFIG.API.YOUTUBE}`;
       const res = await fetch(url);
@@ -499,17 +497,14 @@ export default function YouTubeNoADs() {
         const durationIso = data.items[0].contentDetails.duration;
         const durationSec = parseISO8601Duration(durationIso);
 
-        // Verificar límites del plan
         const exceeded = cpuUsagePercent > ui.planData.cpuPercent || networkUsageTotal > ui.planData.networkMB;
         if (exceeded && durationSec > 300) {
-          // Mostrar mensaje y no reproducir
           pushNotification("Tu plan ha excedido los límites. Solo puedes ver vídeos de 5 minutos o menos. Mejora tu plan para eliminar restricciones.", "error");
           return;
         }
       }
     } catch (err) {
       console.error("Error obteniendo duración del vídeo", err);
-      // Si falla, permitimos reproducción por defecto
     }
     setUi(p => ({...p, activeMedia: videoId}));
   };
