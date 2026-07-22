@@ -10,13 +10,14 @@ import {
 
 /**
  * ============================================================================
- * YOUTUBE-NOADS V13.5 - MEGA BUILD 2026
+ * YOUTUBE-NOADS V13.5 - MEGA BUILD 2026 (SERVER EDITION)
  * ============================================================================
  * TOTAL REPAIR: 
- * - AUTH PERSISTENCE ENGINE (Fixes "Missing Initial State")
- * - DB SANITIZATION LAYER (Fixes "Database Error" on any @domain)
- * - XL CINEMA ENGINE (Twitch, YouTube, Vidsrc)
- * - PANIC PROTOCOL V5 (Deep Link + Tab Self-Destruct)
+ * - AUTH PERSISTENCE ENGINE
+ * - DB SANITIZATION LAYER
+ * - XL CINEMA ENGINE (YouTube)
+ * - PANIC PROTOCOL V5
+ * - SERVER SETTINGS & ADMIN SERVER LOOKUP
  * ============================================================================
  */
 
@@ -37,6 +38,15 @@ const ALEX_CONFIG = {
     VERSION: "13.5.0-MEGA",
     PANIC_URL: "https://managebac.com",
     PANIC_APP: "managebac://"
+  },
+  DEFAULT_SERVER_SETTINGS: {
+    autoplay: true,
+    volume: 80,
+    theme: '#ff0000',
+    region: 'ES',
+    restrictedMode: false,
+    quality: 'auto',
+    notifications: true
   }
 };
 
@@ -81,21 +91,22 @@ export default function YouTubeNoADs() {
     isAdminOpen: false,
     adminTab: 'users',
     notifications: [],
-    theme: '#ff0000'
+    theme: '#ff0000',
+    // Server settings panel
+    showServerSettings: false,
+    serverId: '',
+    serverSettings: { ...ALEX_CONFIG.DEFAULT_SERVER_SETTINGS },
+    serverSettingsLoading: true
   });
 
   // --- REFS PARA DOMINIO Y PÁNICO ---
   const videoRef = useRef(null);
   const adminPassRef = useRef(null);
+  const adminServerIdRef = useRef(null);
 
   // ==========================================
   // 1. ENGINE: SANITIZACIÓN DE DB (FIX TOTAL)
   // ==========================================
-  /**
-   * Esta función es el corazón de la reparación. 
-   * Firebase no permite "." o "@" en las llaves. 
-   * Esta función los traduce a códigos seguros.
-   */
   const sanitizeEmail = (email) => {
     if (!email || typeof email !== 'string') return "invalid_user";
     return email.toLowerCase()
@@ -114,9 +125,7 @@ export default function YouTubeNoADs() {
   useEffect(() => {
     const initAuth = async () => {
       try {
-        // Fix: Unable to process request due to missing initial state
         await setPersistence(auth, browserLocalPersistence);
-        
         onAuthStateChanged(auth, (currentUser) => {
           if (currentUser) {
             setUser(currentUser);
@@ -131,10 +140,15 @@ export default function YouTubeNoADs() {
         console.error("Auth Init Error:", error);
       }
     };
-
     initAuth();
     syncDatabase();
   }, []);
+
+  // Efecto para cargar datos del servidor del usuario
+  useEffect(() => {
+    if (!user || !accessGranted) return;
+    loadUserServerData();
+  }, [user, accessGranted]);
 
   const syncDatabase = () => {
     const refs = {
@@ -143,7 +157,6 @@ export default function YouTubeNoADs() {
       premium: ref(db, 'premium'),
       logs: dbQuery(ref(db, 'logs'), limitToLast(100))
     };
-
     onValue(refs.whitelist, (s) => setData(p => ({...p, whitelist: s.val() || {}})));
     onValue(refs.blacklist, (s) => setData(p => ({...p, blacklist: s.val() || {}})));
     onValue(refs.logs, (s) => {
@@ -154,8 +167,6 @@ export default function YouTubeNoADs() {
 
   const verifyAccessProtocol = (email) => {
     const key = sanitizeEmail(email);
-    
-    // Check Blacklist First
     onValue(ref(db, `blacklist/${key}`), (snap) => {
       if (snap.exists()) {
         setIsBanned(true);
@@ -163,7 +174,6 @@ export default function YouTubeNoADs() {
         setAuthLoading(false);
       } else {
         setIsBanned(false);
-        // Check Whitelist (Supports any domain: @gmail, @lamiranda.eu, etc.)
         onValue(ref(db, `whitelist/${key}`), (wSnap) => {
           if (wSnap.exists() || email === "alex.admin@pro.com") {
             setAccessGranted(true);
@@ -179,22 +189,80 @@ export default function YouTubeNoADs() {
   };
 
   // ==========================================
-  // 3. ENGINE: PROTOCOLO DE PÁNICO V5
+  // 3. ENGINE: CARGA DE DATOS DEL SERVIDOR DEL USUARIO
+  // ==========================================
+  const loadUserServerData = async () => {
+    if (!user) return;
+    const emailKey = sanitizeEmail(user.email);
+    const userServerRef = ref(db, `userServers/${emailKey}`);
+    setUi(p => ({ ...p, serverSettingsLoading: true }));
+    
+    try {
+      const snap = await get(userServerRef);
+      let serverId;
+      if (snap.exists()) {
+        serverId = snap.val().serverId;
+      } else {
+        serverId = generateServerId();
+        await set(userServerRef, { serverId, email: user.email });
+      }
+      
+      // Cargar configuración del servidor
+      const serverSettingsRef = ref(db, `servers/${serverId}`);
+      const settingsSnap = await get(serverSettingsRef);
+      let settings;
+      if (settingsSnap.exists()) {
+        settings = settingsSnap.val();
+      } else {
+        settings = { ...ALEX_CONFIG.DEFAULT_SERVER_SETTINGS };
+        await set(serverSettingsRef, settings);
+      }
+      
+      setUi(p => ({
+        ...p,
+        serverId,
+        serverSettings: settings,
+        serverSettingsLoading: false
+      }));
+    } catch (err) {
+      console.error("Error loading server data:", err);
+      setUi(p => ({ ...p, serverSettingsLoading: false }));
+    }
+  };
+
+  const generateServerId = () => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let id = '';
+    for (let i = 0; i < 12; i++) {
+      if (i > 0 && i % 3 === 0) id += '-';
+      id += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return id;
+  };
+
+  const updateServerSetting = async (key, value) => {
+    const newSettings = { ...ui.serverSettings, [key]: value };
+    setUi(p => ({ ...p, serverSettings: newSettings }));
+    if (ui.serverId) {
+      await set(ref(db, `servers/${ui.serverId}`), newSettings);
+      pushNotification(`Ajuste "${key}" actualizado`, "success");
+      addLog(`SERVER: Cambio de ${key} a ${value}`);
+    }
+  };
+
+  // ==========================================
+  // 4. ENGINE: PROTOCOLO DE PÁNICO V5
   // ==========================================
   const triggerPanic = useCallback(() => {
-    // 1. Intento de apertura de App Nativa
     window.location.href = ALEX_CONFIG.API.PANIC_APP;
-    
-    // 2. Camuflaje inmediato
     setTimeout(() => {
       window.location.replace("https://www.google.com/search?q=managebac+login");
-      // 3. Intento de cierre de pestaña
       window.close();
     }, 150);
   }, []);
 
   // ==========================================
-  // 4. ENGINE: CONTROL ADMINISTRATIVO
+  // 5. ENGINE: CONTROL ADMINISTRATIVO (INCLUYE SERVIDORES)
   // ==========================================
   const handleAdminAuth = (e) => {
     e.preventDefault();
@@ -214,10 +282,8 @@ export default function YouTubeNoADs() {
     if (!email || !email.includes('@')) {
       return pushNotification("EMAIL NO VÁLIDO", "error");
     }
-
     const key = sanitizeEmail(email);
     const targetRef = ref(db, `${table}/${key}`);
-
     try {
       if (action === 'add') {
         await set(targetRef, {
@@ -238,6 +304,20 @@ export default function YouTubeNoADs() {
     }
   };
 
+  const lookupServer = async (serverIdInput) => {
+    if (!serverIdInput) return pushNotification("Introduce un Server ID", "error");
+    const snap = await get(ref(db, `servers/${serverIdInput}`));
+    if (snap.exists()) {
+      const details = snap.val();
+      pushNotification(`Servidor ${serverIdInput} encontrado`, "success");
+      addLog(`ADMIN: Consultó servidor ${serverIdInput}`);
+      return details;
+    } else {
+      pushNotification(`Servidor ${serverIdInput} no encontrado`, "error");
+      return null;
+    }
+  };
+
   const addLog = (msg) => {
     const newLog = push(ref(db, 'logs'));
     set(newLog, {
@@ -248,27 +328,20 @@ export default function YouTubeNoADs() {
   };
 
   // ==========================================
-  // 5. ENGINE: MULTIMEDIA XL
+  // 6. ENGINE: BÚSQUEDA Y REPRODUCCIÓN (SOLO YOUTUBE)
   // ==========================================
-    const searchMedia = async (e) => {
+  const searchMedia = async (e) => {
     if (e) e.preventDefault();
     if (!ui.searchQuery) return;
-
-    setUi(p => ({...p, loading: true, results: []})); // Limpiamos resultados previos
+    setUi(p => ({...p, loading: true, results: []}));
     try {
-      if (ui.mode === 'youtube') {
-        const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=50&q=${encodeURIComponent(ui.searchQuery)}&type=video&key=${ALEX_CONFIG.API.YOUTUBE}`;
-        const response = await fetch(url);
-        const resData = await response.json();
-        
-        if (resData.items) {
-          setUi(p => ({...p, results: resData.items, activeMedia: null}));
-        } else {
-          pushNotification("NO SE ENCONTRARON VIDEOS", "error");
-        }
+      const url = `https://www.googleapis.com/youtube/v3/search?part=snippet&maxResults=50&q=${encodeURIComponent(ui.searchQuery)}&type=video&key=${ALEX_CONFIG.API.YOUTUBE}`;
+      const response = await fetch(url);
+      const resData = await response.json();
+      if (resData.items) {
+        setUi(p => ({...p, results: resData.items, activeMedia: null}));
       } else {
-        // Para otros modos (Twitch, Movies, etc) simplemente activamos el modo cinema
-        setUi(p => ({...p, activeMedia: ui.searchQuery || 'default'}));
+        pushNotification("NO SE ENCONTRARON VIDEOS", "error");
       }
     } catch (err) {
       pushNotification("ERROR DE CONEXIÓN API", "error");
@@ -363,21 +436,24 @@ export default function YouTubeNoADs() {
             </div>
 
             <div style={Styles.NavTabs}>
-              {['youtube', 'twitch', 'movies', 'xbox', 'radio'].map(m => (
-                <button 
-                  key={m} 
-                  onClick={() => setUi(p => ({...p, mode: m, activeMedia: null}))}
-                  style={ui.mode === m ? {...Styles.Tab, background: ui.theme, color: '#fff'} : Styles.Tab}
-                >
-                  {m.toUpperCase()}
-                </button>
-              ))}
+              <button 
+                onClick={() => setUi(p => ({...p, mode: 'youtube', showServerSettings: false}))}
+                style={ui.mode === 'youtube' && !ui.showServerSettings ? {...Styles.Tab, background: ui.theme, color: '#fff'} : Styles.Tab}
+              >
+                YOUTUBE
+              </button>
+              <button 
+                onClick={() => setUi(p => ({...p, mode: 'youtube', showServerSettings: true}))}
+                style={ui.showServerSettings ? {...Styles.Tab, background: ui.theme, color: '#fff'} : Styles.Tab}
+              >
+                SERVER SETTINGS
+              </button>
             </div>
 
             <form onSubmit={searchMedia} style={Styles.SearchContainer}>
               <input 
                 style={Styles.SearchInput} 
-                placeholder={`Buscar en ${ui.mode}...`} 
+                placeholder="Buscar en YouTube..." 
                 value={ui.searchQuery}
                 onChange={e => setUi(p => ({...p, searchQuery: e.target.value}))}
               />
@@ -393,47 +469,108 @@ export default function YouTubeNoADs() {
           <main style={Styles.Content}>
             {ui.loading && <div className="alex-loader" style={{margin: '50px auto'}}></div>}
 
-            {ui.mode === 'youtube' && !ui.activeMedia && (
-              <div style={Styles.MediaGrid}>
-                {ui.results.map((v, i) => (
-                  <div key={i} style={Styles.MediaCard} onClick={() => setUi(p => ({...p, activeMedia: v.id.videoId}))}>
-                    <div style={Styles.ThumbWrap}>
-                      <img src={v.snippet.thumbnails.high.url} style={Styles.Thumb} alt="t" />
-                      <div style={Styles.PlayOverlay}>REPRODUCIR XL</div>
-                    </div>
-                    <div style={Styles.CardData}>
-                      <h4 style={Styles.CardTitle}>{v.snippet.title}</h4>
-                      <p style={Styles.CardSub}>{v.snippet.channelTitle}</p>
-                    </div>
+            {/* MODO YOUTUBE */}
+            {!ui.showServerSettings && (
+              <>
+                {!ui.activeMedia ? (
+                  <div style={Styles.MediaGrid}>
+                    {ui.results.map((v, i) => (
+                      <div key={i} style={Styles.MediaCard} onClick={() => setUi(p => ({...p, activeMedia: v.id.videoId}))}>
+                        <div style={Styles.ThumbWrap}>
+                          <img src={v.snippet.thumbnails.high.url} style={Styles.Thumb} alt="t" />
+                          <div style={Styles.PlayOverlay}>REPRODUCIR XL</div>
+                        </div>
+                        <div style={Styles.CardData}>
+                          <h4 style={Styles.CardTitle}>{v.snippet.title}</h4>
+                          <p style={Styles.CardSub}>{v.snippet.channelTitle}</p>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                ) : (
+                  <div style={Styles.CinemaFrame}>
+                    <iframe 
+                      src={`https://www.youtube-nocookie.com/embed/${ui.activeMedia}?autoplay=1&modestbranding=1&rel=0`}
+                      style={Styles.IframeXL}
+                      allow="autoplay; aria-live; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+                      frameBorder="0"
+                      allowFullScreen
+                    />
+                    <button 
+                      onClick={() => setUi(p => ({...p, activeMedia: null}))} 
+                      style={Styles.CloseCinema}
+                    >
+                      CERRAR VIDEO
+                    </button>
+                  </div>
+                )}
+              </>
             )}
-                        {(ui.activeMedia || ui.mode !== 'youtube') && (
-              <div style={Styles.CinemaFrame}>
-                <iframe 
-                  src={
-                    ui.mode === 'youtube' 
-                      ? `https://www.youtube-nocookie.com/embed/${ui.activeMedia}?autoplay=1&modestbranding=1&rel=0` 
-                      : ui.mode === 'twitch' 
-                      ? `https://player.twitch.tv/?channel=${ui.searchQuery.replace(/\s+/g, '') || 'ibai'}&parent=${window.location.hostname}&autoplay=true` 
-                      : ui.mode === 'movies' 
-                      ? `https://vidsrc.to/embed/movie/${ui.searchQuery || 'tt0111161'}` 
-                      : ui.mode === 'xbox' 
-                      ? "https://www.xbox.com/play" 
-                      : "https://www.radio.net/embed/los40"
-                  }
-                  style={Styles.IframeXL}
-                  allow="autoplay; aria-live; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-                  frameBorder="0"
-                  allowFullScreen
-                />
-                <button 
-                  onClick={() => setUi(p => ({...p, activeMedia: null}))} 
-                  style={Styles.CloseCinema}
-                >
-                  {ui.mode === 'youtube' ? 'CERRAR VIDEO' : 'VOLVER AL HUB'}
-                </button>
+
+            {/* MODO SERVER SETTINGS */}
+            {ui.showServerSettings && (
+              <div style={Styles.SettingsPanel}>
+                <h2 style={Styles.SettingsTitle}>⚙️ SERVER SETTINGS</h2>
+                {ui.serverSettingsLoading ? (
+                  <div className="alex-loader" style={{margin: '50px auto'}}></div>
+                ) : (
+                  <>
+                    <div style={Styles.SettingsGrid}>
+                      <div style={Styles.SettingItem}>
+                        <label>Autoplay</label>
+                        <select value={ui.serverSettings.autoplay} onChange={(e) => updateServerSetting('autoplay', e.target.value === 'true')}>
+                          <option value="true">Activado</option>
+                          <option value="false">Desactivado</option>
+                        </select>
+                      </div>
+                      <div style={Styles.SettingItem}>
+                        <label>Volumen por defecto</label>
+                        <input type="range" min="0" max="100" value={ui.serverSettings.volume} onChange={(e) => updateServerSetting('volume', parseInt(e.target.value))} />
+                        <span>{ui.serverSettings.volume}%</span>
+                      </div>
+                      <div style={Styles.SettingItem}>
+                        <label>Tema de color</label>
+                        <input type="color" value={ui.serverSettings.theme} onChange={(e) => updateServerSetting('theme', e.target.value)} />
+                      </div>
+                      <div style={Styles.SettingItem}>
+                        <label>Región</label>
+                        <select value={ui.serverSettings.region} onChange={(e) => updateServerSetting('region', e.target.value)}>
+                          <option value="ES">España</option>
+                          <option value="MX">México</option>
+                          <option value="AR">Argentina</option>
+                          <option value="US">Estados Unidos</option>
+                        </select>
+                      </div>
+                      <div style={Styles.SettingItem}>
+                        <label>Modo Restringido</label>
+                        <select value={ui.serverSettings.restrictedMode} onChange={(e) => updateServerSetting('restrictedMode', e.target.value === 'true')}>
+                          <option value="false">Desactivado</option>
+                          <option value="true">Activado</option>
+                        </select>
+                      </div>
+                      <div style={Styles.SettingItem}>
+                        <label>Calidad predeterminada</label>
+                        <select value={ui.serverSettings.quality} onChange={(e) => updateServerSetting('quality', e.target.value)}>
+                          <option value="auto">Automática</option>
+                          <option value="hd1080">1080p</option>
+                          <option value="hd720">720p</option>
+                          <option value="large">480p</option>
+                        </select>
+                      </div>
+                      <div style={Styles.SettingItem}>
+                        <label>Notificaciones</label>
+                        <select value={ui.serverSettings.notifications} onChange={(e) => updateServerSetting('notifications', e.target.value === 'true')}>
+                          <option value="true">Activadas</option>
+                          <option value="false">Desactivadas</option>
+                        </select>
+                      </div>
+                    </div>
+                    <div style={Styles.ServerIdBox}>
+                      <p>SERVER ID: <span style={{fontWeight: 'bold', color: ui.theme}}>{ui.serverId}</span></p>
+                      <small style={{color: '#666'}}>Este código identifica tu servidor único. Úsalo para consultas administrativas.</small>
+                    </div>
+                  </>
+                )}
               </div>
             )}
           </main>
@@ -471,6 +608,7 @@ export default function YouTubeNoADs() {
             <div style={{display: 'flex', gap: '15px'}}>
                <button onClick={() => setUi(p => ({...p, adminTab: 'users'}))} style={ui.adminTab === 'users' ? Styles.AdminTabAct : Styles.AdminTab}>USUARIOS</button>
                <button onClick={() => setUi(p => ({...p, adminTab: 'logs'}))} style={ui.adminTab === 'logs' ? Styles.AdminTabAct : Styles.AdminTab}>REGISTROS</button>
+               <button onClick={() => setUi(p => ({...p, adminTab: 'servers'}))} style={ui.adminTab === 'servers' ? Styles.AdminTabAct : Styles.AdminTab}>SERVIDORES</button>
                <button onClick={() => setUi(p => ({...p, isAdminOpen: false}))} style={Styles.ExitAdmin}>X</button>
             </div>
           </div>
@@ -478,9 +616,8 @@ export default function YouTubeNoADs() {
           <div style={Styles.AdminBody}>
             {ui.adminTab === 'users' ? (
               <div style={Styles.AdminGrid}>
-                {/* COLUMNA WHITELIST */}
                 <div style={Styles.AdminCol}>
-                  <h3>✅ CORREOS VERIFICADOS (@GMAIL, @LAMIRANDA...)</h3>
+                  <h3>✅ CORREOS VERIFICADOS</h3>
                   <div style={Styles.AdminActions}>
                     <input id="addWhite" placeholder="ejemplo@lamiranda.eu" style={Styles.AdmInput} />
                     <button onClick={() => modifyUserStatus('whitelist', document.getElementById('addWhite').value, 'add')} style={Styles.AddBtn}>AÑADIR</button>
@@ -494,10 +631,8 @@ export default function YouTubeNoADs() {
                     ))}
                   </div>
                 </div>
-
-                {/* COLUMNA BLACKLIST */}
                 <div style={Styles.AdminCol}>
-                  <h3>🚫 BANEADOS (EXPULSIÓN TOTAL)</h3>
+                  <h3>🚫 BANEADOS</h3>
                   <div style={Styles.AdminActions}>
                     <input id="addBlack" placeholder="usuario@gmail.com" style={Styles.AdmInput} />
                     <button onClick={() => modifyUserStatus('blacklist', document.getElementById('addBlack').value, 'add')} style={Styles.BanBtn}>BANEAR</button>
@@ -512,7 +647,7 @@ export default function YouTubeNoADs() {
                   </div>
                 </div>
               </div>
-            ) : (
+            ) : ui.adminTab === 'logs' ? (
               <div style={Styles.LogContainer}>
                 {data.logs.map((l, i) => (
                   <div key={i} style={Styles.LogLine}>
@@ -520,6 +655,34 @@ export default function YouTubeNoADs() {
                     <span style={{color: ui.theme}}> {l.u}:</span> {l.msg}
                   </div>
                 ))}
+              </div>
+            ) : (
+              /* PESTAÑA SERVIDORES (ADMIN) */
+              <div style={Styles.AdminServerTab}>
+                <h3>🔍 CONSULTAR SERVIDOR POR ID</h3>
+                <div style={Styles.AdminActions}>
+                  <input ref={adminServerIdRef} placeholder="Ej: WY-ISM-KEM-KDM" style={Styles.AdmInput} />
+                  <button onClick={async () => {
+                    const id = adminServerIdRef.current.value;
+                    const details = await lookupServer(id);
+                    if (details) {
+                      setUi(p => ({...p, serverDetails: details, currentLookupId: id}));
+                    }
+                  }} style={Styles.AddBtn}>BUSCAR</button>
+                </div>
+                {ui.serverDetails && (
+                  <div style={Styles.ServerDetailsBox}>
+                    <h4>Servidor: {ui.currentLookupId}</h4>
+                    <div style={Styles.DetailsGrid}>
+                      {Object.entries(ui.serverDetails).map(([key, value]) => (
+                        <div key={key} style={Styles.DetailItem}>
+                          <span style={{color: '#888'}}>{key}:</span>
+                          <span>{typeof value === 'boolean' ? (value ? 'Sí' : 'No') : value.toString()}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -579,9 +742,18 @@ const Styles = {
   IframeXL: { width: '100%', height: '100%', border: 'none' },
   CloseCinema: { position: 'absolute', top: '30px', right: '30px', background: '#ff0000', color: '#fff', border: 'none', padding: '15px 30px', borderRadius: '15px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 10px 30px rgba(0,0,0,0.5)' },
 
+  // SETTINGS PANEL
+  SettingsPanel: { maxWidth: '800px', margin: '0 auto', padding: '30px', background: '#050505', borderRadius: '30px', border: '1px solid #111' },
+  SettingsTitle: { fontSize: '28px', marginBottom: '30px', color: '#fff' },
+  SettingsGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '25px', marginBottom: '40px' },
+  SettingItem: { display: 'flex', flexDirection: 'column', gap: '10px', background: '#0a0a0a', padding: '20px', borderRadius: '15px' },
+  ServerIdBox: { textAlign: 'center', padding: '25px', background: '#000', borderRadius: '15px', border: '1px solid #222', marginTop: '20px' },
+
   // ADMIN UI
   CommandCenter: { position: 'fixed', inset: '30px', background: '#050505', borderRadius: '40px', zIndex: 1000, display: 'flex', flexDirection: 'column', border: '1px solid #333', boxShadow: '0 0 200px #000' },
   AdminHeader: { padding: '30px 50px', borderBottom: '1px solid #111', display: 'flex', justifyContent: 'space-between', alignItems: 'center' },
+  AdminTabAct: { background: '#ff0000', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '10px', fontWeight: 'bold', cursor: 'pointer' },
+  AdminTab: { background: '#111', color: '#555', border: 'none', padding: '10px 20px', borderRadius: '10px', fontWeight: 'bold', cursor: 'pointer' },
   AdminBody: { flex: 1, padding: '40px', overflowY: 'auto' },
   AdminGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '40px' },
   AdminCol: { background: '#0a0a0a', padding: '30px', borderRadius: '30px', border: '1px solid #111' },
@@ -590,16 +762,20 @@ const Styles = {
   UserList: { display: 'flex', flexDirection: 'column', gap: '10px', maxHeight: '400px', overflowY: 'auto' },
   UserItem: { background: '#050505', padding: '15px', borderRadius: '15px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', border: '1px solid #111' },
   
-  // BUTTONS
   AddBtn: { background: '#00ff41', color: '#000', border: 'none', padding: '10px 20px', borderRadius: '10px', fontWeight: 'bold', cursor: 'pointer' },
   BanBtn: { background: '#ff0000', color: '#fff', border: 'none', padding: '10px 20px', borderRadius: '10px', fontWeight: 'bold', cursor: 'pointer' },
   DelBtn: { background: '#111', color: '#555', border: 'none', padding: '8px 15px', borderRadius: '8px', cursor: 'pointer' },
   UnbanBtn: { background: '#00ff41', color: '#000', border: 'none', padding: '8px 15px', borderRadius: '8px', cursor: 'pointer' },
   ExitAdmin: { background: '#fff', color: '#000', border: 'none', width: '40px', height: '40px', borderRadius: '10px', fontWeight: 'bold', cursor: 'pointer' },
   
-  // LOGS
   LogContainer: { background: '#000', padding: '30px', borderRadius: '25px', fontFamily: 'monospace', fontSize: '12px', border: '1px solid #111' },
   LogLine: { padding: '8px 0', borderBottom: '1px solid #080808' },
+
+  // ADMIN SERVER TAB
+  AdminServerTab: { padding: '20px', background: '#0a0a0a', borderRadius: '20px' },
+  ServerDetailsBox: { marginTop: '30px', background: '#000', padding: '25px', borderRadius: '20px', border: '1px solid #222' },
+  DetailsGrid: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '15px', marginTop: '20px' },
+  DetailItem: { display: 'flex', justifyContent: 'space-between', padding: '10px', background: '#111', borderRadius: '10px' },
 
   // NOTIFS
   NotifLayer: { position: 'fixed', top: '30px', right: '30px', zIndex: 1000000, display: 'flex', flexDirection: 'column', gap: '10px' },
@@ -629,6 +805,15 @@ if (typeof document !== 'undefined') {
     ::-webkit-scrollbar { width: 6px; }
     ::-webkit-scrollbar-thumb { background: #222; border-radius: 10px; }
     ::-webkit-scrollbar-track { background: #000; }
+    select, input[type="range"], input[type="color"] {
+      background: #111;
+      border: 1px solid #333;
+      color: #fff;
+      border-radius: 8px;
+      padding: 8px;
+      cursor: pointer;
+    }
+    select option { background: #000; }
   `;
   document.head.appendChild(styleTag);
 }
