@@ -18,6 +18,7 @@ import {
  * - DYNAMIC CPU/NETWORK MONITORING
  * - PLAN-BASED VIDEO DURATION LIMITER (max 5 min si excede)
  * - ADMIN CAN ASSIGN PLANS TO EMAILS (WITH 25s UPDATE DELAY)
+ * - CONSOLE WITH GRAPHS & TERMINAL LOGS
  * ============================================================================
  */
 
@@ -186,9 +187,14 @@ export default function YouTubeNoADs() {
   useEffect(() => {
     const interval = setInterval(() => {
       setMetrics({ cpu: cpuUsagePercent, network: networkUsageTotal });
-    }, 5000);
+    }, 1000); // actualizado cada segundo para gráficos fluidos
     return () => clearInterval(interval);
   }, []);
+
+  // --- ESTADOS DE LA CONSOLA DE LOGS ---
+  const [consoleLogs, setConsoleLogs] = useState([]);
+  const [consoleStatus, setConsoleStatus] = useState('stopped'); // 'stopped' | 'starting' | 'running'
+  const [consoleLoadingDots, setConsoleLoadingDots] = useState('');
 
   // --- REFS ---
   const videoRef = useRef(null);
@@ -468,6 +474,34 @@ export default function YouTubeNoADs() {
     return () => clearTimeout(timer);
   }, [ui.updatingPlan, ui.updateCountdown]);
 
+  // --- MANEJO DE LA CONSOLA DE LOGS ---
+  const startConsole = () => {
+    setConsoleStatus('starting');
+    setConsoleLogs([]);
+    // Animación de puntos
+    const dotsInterval = setInterval(() => {
+      setConsoleLoadingDots(prev => prev.length >= 3 ? '' : prev + '.');
+    }, 500);
+    // Simular arranque de 5 segundos
+    setTimeout(() => {
+      clearInterval(dotsInterval);
+      setConsoleLoadingDots('');
+      setConsoleStatus('running');
+      const baseLogs = [
+        { time: new Date().toLocaleTimeString(), msg: '[SYSTEM] Iniciando servicios...' },
+        { time: new Date().toLocaleTimeString(), msg: '[CORE] Cargando módulos del kernel...' },
+        { time: new Date().toLocaleTimeString(), msg: '[NETWORK] Configurando interfaz de red...' },
+        { time: new Date().toLocaleTimeString(), msg: '[SECURITY] Verificando certificados SSL...' },
+        { time: new Date().toLocaleTimeString(), msg: '[DATABASE] Conectando a Firebase RTDB...' },
+        { time: new Date().toLocaleTimeString(), msg: '[SERVICES] Todos los servicios iniciados correctamente.' },
+        { time: new Date().toLocaleTimeString(), msg: '[CONSOLE] Consola de monitorización activada.' },
+      ];
+      setConsoleLogs(baseLogs);
+      pushNotification("Consola iniciada correctamente", "success");
+      addLog("USER: Inició la consola de monitorización");
+    }, 5000);
+  };
+
   const addLog = (msg) => {
     const newLog = push(ref(db, 'logs'));
     set(newLog, {
@@ -551,6 +585,31 @@ export default function YouTubeNoADs() {
       </div>
     </div>
   );
+
+  // --- Helpers para gráficos circulares ---
+  const CircularProgress = ({ value, max, color, label }) => {
+    const radius = 60;
+    const circumference = 2 * Math.PI * radius;
+    const percent = Math.min((value / max) * 100, 100);
+    const offset = circumference - (percent / 100) * circumference;
+    return (
+      <div style={{ textAlign: 'center', width: '160px', margin: '0 auto' }}>
+        <svg width="140" height="140" viewBox="0 0 140 140">
+          <circle cx="70" cy="70" r={radius} fill="none" stroke="#1a1a1a" strokeWidth="10" />
+          <circle
+            cx="70" cy="70" r={radius} fill="none"
+            stroke={color} strokeWidth="10"
+            strokeDasharray={circumference} strokeDashoffset={offset}
+            strokeLinecap="round"
+            transform="rotate(-90 70 70)"
+            style={{ transition: 'stroke-dashoffset 0.8s ease' }}
+          />
+        </svg>
+        <div style={{ marginTop: '-90px', fontSize: '22px', fontWeight: 'bold', color }}>{percent.toFixed(1)}%</div>
+        <div style={{ marginTop: '60px', fontSize: '12px', color: '#888' }}>{label}</div>
+      </div>
+    );
+  };
 
   return (
     <div style={Styles.AppBody}>
@@ -760,38 +819,60 @@ export default function YouTubeNoADs() {
                 <h2 style={Styles.SettingsTitle}>📊 CONSOLE DE RENDIMIENTO</h2>
                 <p style={{color: '#888', marginBottom: '30px'}}>Plan actual: <strong style={{color: ui.theme}}>{ui.planData.name} ({ui.planData.price})</strong></p>
                 
-                <div style={Styles.MetricBox}>
-                  <div style={Styles.MetricHeader}>
-                    <span>🧠 Uso de CPU</span>
-                    <span>{Math.min(metrics.cpu, ui.planData.cpuPercent).toFixed(1)}% / {ui.planData.cpuPercent}%</span>
-                  </div>
-                  <div style={Styles.ProgressBarBg}>
-                    <div style={{
-                      ...Styles.ProgressBarFill,
-                      width: `${Math.min((metrics.cpu / ui.planData.cpuPercent) * 100, 100)}%`,
-                      background: metrics.cpu > ui.planData.cpuPercent ? '#ff0000' : '#00ff41'
-                    }}></div>
-                  </div>
+                <div style={{ display: 'flex', justifyContent: 'center', gap: '80px', marginBottom: '40px', flexWrap: 'wrap' }}>
+                  <CircularProgress 
+                    value={metrics.cpu} 
+                    max={ui.planData.cpuPercent} 
+                    color={metrics.cpu > ui.planData.cpuPercent ? '#ff0000' : '#00ff41'} 
+                    label="CPU" 
+                  />
+                  <CircularProgress 
+                    value={metrics.network} 
+                    max={ui.planData.networkMB} 
+                    color={metrics.network > ui.planData.networkMB ? '#ff0000' : '#00ff41'} 
+                    label="Network (MB)" 
+                  />
                 </div>
 
-                <div style={Styles.MetricBox}>
-                  <div style={Styles.MetricHeader}>
-                    <span>📡 Network (datos transferidos)</span>
-                    <span>{metrics.network.toFixed(2)} MB / {ui.planData.networkMB} MB</span>
+                {/* CONSOLA DE LOGS ESTILO TERMINAL */}
+                <div style={Styles.TerminalContainer}>
+                  <div style={Styles.TerminalHeader}>
+                    <span>🖥️ CONSOLA DE SERVICIO</span>
+                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                      {consoleStatus === 'running' && <span style={{ color: '#00ff41', fontSize: '12px' }}>● ACTIVO</span>}
+                      {consoleStatus === 'starting' && <span style={{ color: '#ffaa00', fontSize: '12px' }}>● INICIANDO{consoleLoadingDots}</span>}
+                      {consoleStatus === 'stopped' && <span style={{ color: '#ff0000', fontSize: '12px' }}>● DETENIDO</span>}
+                      <button 
+                        onClick={startConsole} 
+                        style={Styles.StartBtn}
+                        disabled={consoleStatus === 'starting'}
+                      >
+                        {consoleStatus === 'running' ? 'REINICIAR' : 'START'}
+                      </button>
+                    </div>
                   </div>
-                  <div style={Styles.ProgressBarBg}>
-                    <div style={{
-                      ...Styles.ProgressBarFill,
-                      width: `${Math.min((metrics.network / ui.planData.networkMB) * 100, 100)}%`,
-                      background: metrics.network > ui.planData.networkMB ? '#ff0000' : '#00ff41'
-                    }}></div>
+                  <div style={Styles.TerminalBody}>
+                    {consoleStatus === 'starting' && (
+                      <div style={{ textAlign: 'center', padding: '40px' }}>
+                        <div className="alex-loader" style={{ margin: '0 auto 20px' }}></div>
+                        <p style={{ color: '#ffaa00', fontFamily: 'monospace' }}>Iniciando servicios del sistema{consoleLoadingDots}</p>
+                      </div>
+                    )}
+                    {consoleStatus === 'stopped' && (
+                      <div style={{ textAlign: 'center', padding: '40px', color: '#555', fontFamily: 'monospace' }}>
+                        Consola detenida. Presione START para iniciar los servicios.
+                      </div>
+                    )}
+                    {consoleStatus === 'running' && consoleLogs.map((log, i) => (
+                      <div key={i} style={Styles.LogEntry}>
+                        <span style={{ color: '#666', marginRight: '10px' }}>[{log.time}]</span>
+                        <span style={{ color: '#00ff41' }}>{log.msg}</span>
+                      </div>
+                    ))}
+                    {consoleStatus === 'running' && (
+                      <div style={{ color: '#00ff41', fontFamily: 'monospace' }}>root@youtube-noads:~$ <span className="console-cursor">▋</span></div>
+                    )}
                   </div>
-                </div>
-
-                <div style={{marginTop: '30px', color: '#666', fontSize: '12px'}}>
-                  * El uso de CPU se mide en tiempo real basado en el renderizado.<br/>
-                  * El tráfico de red incluye todos los recursos descargados por la app.<br/>
-                  * Si excedes los límites, solo podrás ver vídeos de 5 minutos o menos hasta que mejores tu plan.
                 </div>
               </div>
             )}
@@ -1034,11 +1115,12 @@ const Styles = {
   ServerIdBox: { textAlign: 'center', padding: '25px', background: '#000', borderRadius: '15px', border: '1px solid #222', marginTop: '20px' },
 
   // CONSOLE
-  ConsolePanel: { maxWidth: '800px', margin: '0 auto', padding: '30px', background: '#050505', borderRadius: '30px', border: '1px solid #111' },
-  MetricBox: { marginBottom: '30px' },
-  MetricHeader: { display: 'flex', justifyContent: 'space-between', marginBottom: '10px', fontSize: '16px' },
-  ProgressBarBg: { height: '20px', background: '#1a1a1a', borderRadius: '10px', overflow: 'hidden' },
-  ProgressBarFill: { height: '100%', borderRadius: '10px', transition: 'width 0.5s ease' },
+  ConsolePanel: { maxWidth: '900px', margin: '0 auto', padding: '30px', background: '#050505', borderRadius: '30px', border: '1px solid #111' },
+  TerminalContainer: { marginTop: '30px', background: '#0a0a0a', borderRadius: '15px', border: '1px solid #222', overflow: 'hidden' },
+  TerminalHeader: { background: '#111', padding: '15px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #222', fontFamily: 'monospace' },
+  StartBtn: { background: '#00ff41', color: '#000', border: 'none', padding: '8px 18px', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', fontFamily: 'monospace' },
+  TerminalBody: { padding: '20px', maxHeight: '300px', overflowY: 'auto', fontFamily: 'monospace', fontSize: '13px', background: '#000', minHeight: '150px' },
+  LogEntry: { padding: '4px 0', borderBottom: '1px solid #0a0a0a' },
 
   // PLANS
   PlansCard: { background: '#0a0a0a', padding: '60px', borderRadius: '40px', border: '1px solid #222', maxWidth: '900px', width: '100%', textAlign: 'center' },
@@ -1123,6 +1205,12 @@ if (typeof document !== 'undefined') {
       cursor: pointer;
     }
     select option { background: #000; }
+    .console-cursor {
+      animation: blink 1s step-end infinite;
+    }
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
   `;
   document.head.appendChild(styleTag);
 }
