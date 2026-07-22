@@ -1,3 +1,4 @@
+// YouTube-NoADs
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
 import { 
@@ -9,7 +10,7 @@ import {
 
 /**
  * ============================================================================
- * ALEX HUB ULTRA V13.5 - MEGA BUILD 2026
+ * YOUTUBE-NOADS V13.5 - MEGA BUILD 2026
  * ============================================================================
  * TOTAL REPAIR: 
  * - AUTH PERSISTENCE ENGINE (Fixes "Missing Initial State")
@@ -45,7 +46,7 @@ const db = getDatabase(app);
 const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
 
-export default function AlexHubUltraV13() {
+export default function YouTubeNoADs() {
   // ==========================================
   // ESTADOS MAESTROS (SEGURIDAD Y SESIÓN)
   // ==========================================
@@ -289,7 +290,7 @@ export default function AlexHubUltraV13() {
   if (authLoading) return (
     <div style={Styles.FullCenter}>
       <div className="alex-loader"></div>
-      <h1 style={Styles.GlitchTitle}>ALEX HUB ULTRA</h1>
+      <h1 style={Styles.GlitchTitle}>YouTube-NoADs</h1>
       <p style={{letterSpacing: '5px', color: '#333'}}>SISTEMA INICIANDO...</p>
     </div>
   );
@@ -326,7 +327,7 @@ export default function AlexHubUltraV13() {
       {!accessGranted ? (
         <div style={Styles.LoginScreen}>
           <div style={Styles.LoginCard}>
-            <h1 style={Styles.MainTitle}>ALEX HUB <span style={{color: ui.theme}}>ULTRA</span></h1>
+            <h1 style={Styles.MainTitle}>YouTube-NoADs <span style={{color: ui.theme}}>ULTRA</span></h1>
             <p style={Styles.VersionText}>V {ALEX_CONFIG.API.VERSION}</p>
 
             <div style={{margin: '50px 0'}}>
@@ -356,7 +357,7 @@ export default function AlexHubUltraV13() {
             <div style={Styles.NavBrand}>
               <div style={Styles.LogoIcon}>A</div>
               <div>
-                <div style={{fontWeight: '900', fontSize: '20px'}}>ALEX HUB</div>
+                <div style={{fontWeight: '900', fontSize: '20px'}}>YouTube-NoADs</div>
                 <div style={{fontSize: '9px', color: ui.theme, letterSpacing: '2px'}}>ULTRA V13.5</div>
               </div>
             </div>
@@ -466,7 +467,7 @@ export default function AlexHubUltraV13() {
       {ui.isAdminOpen && (
         <div style={Styles.CommandCenter}>
           <div style={Styles.AdminHeader}>
-            <h1 style={{color: ui.theme, margin: 0}}>ALEX HUB | COMMAND CENTER</h1>
+            <h1 style={{color: ui.theme, margin: 0}}>YouTube-NoADs | COMMAND CENTER</h1>
             <div style={{display: 'flex', gap: '15px'}}>
                <button onClick={() => setUi(p => ({...p, adminTab: 'users'}))} style={ui.adminTab === 'users' ? Styles.AdminTabAct : Styles.AdminTab}>USUARIOS</button>
                <button onClick={() => setUi(p => ({...p, adminTab: 'logs'}))} style={ui.adminTab === 'logs' ? Styles.AdminTabAct : Styles.AdminTab}>REGISTROS</button>
