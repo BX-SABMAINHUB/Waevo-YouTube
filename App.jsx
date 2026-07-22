@@ -10,14 +10,14 @@ import {
 
 /**
  * ============================================================================
- * YOUTUBE-NOADS V13.5 - MEGA BUILD 2026 (SERVER EDITION)
+ * YOUTUBE-NOADS V13.5 - MEGA BUILD 2026 (LIMIT & PLAN EDITION)
  * ============================================================================
- * TOTAL REPAIR: 
  * - AUTH PERSISTENCE ENGINE
  * - DB SANITIZATION LAYER
  * - XL CINEMA ENGINE (YouTube)
- * - PANIC PROTOCOL V5
- * - SERVER SETTINGS, CONSOLE, PLANS
+ * - DYNAMIC CPU/NETWORK MONITORING
+ * - PLAN-BASED VIDEO DURATION LIMITER (max 5 min si excede)
+ * - ADMIN CAN ASSIGN PLANS TO SERVERS
  * ============================================================================
  */
 
@@ -35,9 +35,7 @@ const ALEX_CONFIG = {
   API: {
     YOUTUBE: "AIzaSyDIImeaSboJvAsi6EChn8IugdLrh3nG9_4",
     ADMIN_PASS: "Alex2706",
-    VERSION: "13.5.0-MEGA",
-    PANIC_URL: "https://managebac.com",
-    PANIC_APP: "managebac://"
+    VERSION: "13.5.0-MEGA"
   },
   DEFAULT_SERVER_SETTINGS: {
     autoplay: true,
@@ -86,7 +84,7 @@ const db = getDatabase(app);
 const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
 
-// --- GLOBALES PARA MONITOREO REAL ---
+// --- GLOBALES PARA MONITOREO REAL (actualizados constantemente) ---
 let frameTimes = [];
 let lastFrameTime = performance.now();
 let networkUsageTotal = 0;
@@ -98,14 +96,12 @@ function trackFrame() {
   frameTimes.push(delta);
   if (frameTimes.length > 60) frameTimes.shift();
   const avgFrameTime = frameTimes.reduce((a,b) => a+b, 0) / frameTimes.length;
-  // Consideramos 16.67ms como 100% de presupuesto (60fps)
   cpuUsagePercent = Math.min(100, (avgFrameTime / 16.67) * 100);
   lastFrameTime = now;
   requestAnimationFrame(trackFrame);
 }
 
 function accumulateNetworkUsage() {
-  // Sumamos transferSize de todos los recursos cargados por el navegador
   const resources = performance.getEntriesByType('resource');
   let total = 0;
   resources.forEach(r => {
@@ -114,11 +110,20 @@ function accumulateNetworkUsage() {
   networkUsageTotal = total / (1024 * 1024); // MB
 }
 
-// Iniciamos el monitoreo de frames
 if (typeof window !== 'undefined') {
   requestAnimationFrame(trackFrame);
-  // Actualizamos network cada 2 segundos
   setInterval(accumulateNetworkUsage, 2000);
+}
+
+// --- FUNCIONES AUXILIARES ---
+function parseISO8601Duration(duration) {
+  // PT1H2M3S -> segundos
+  const match = duration.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!match) return 0;
+  const hours = parseInt(match[1] || '0');
+  const minutes = parseInt(match[2] || '0');
+  const seconds = parseInt(match[3] || '0');
+  return hours * 3600 + minutes * 60 + seconds;
 }
 
 export default function YouTubeNoADs() {
@@ -164,10 +169,23 @@ export default function YouTubeNoADs() {
     serverSettings: { ...ALEX_CONFIG.DEFAULT_SERVER_SETTINGS },
     serverSettingsLoading: true,
     currentPlan: 'free',
-    planData: ALEX_CONFIG.PLANS.free
+    planData: ALEX_CONFIG.PLANS.free,
+    // admin server lookup
+    currentLookupId: null,
+    serverDetails: null,
+    serverOwnerEmail: null
   });
 
-  // --- REFS PARA DOMINIO Y PÁNICO ---
+  // Métricas dinámicas forzadas a estado para re-render
+  const [metrics, setMetrics] = useState({ cpu: 0, network: 0 });
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setMetrics({ cpu: cpuUsagePercent, network: networkUsageTotal });
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
+
+  // --- REFS ---
   const videoRef = useRef(null);
   const adminPassRef = useRef(null);
   const adminServerIdRef = useRef(null);
@@ -212,7 +230,6 @@ export default function YouTubeNoADs() {
     syncDatabase();
   }, []);
 
-  // Cargar datos del usuario cuando esté autenticado y con acceso
   useEffect(() => {
     if (!user || !accessGranted) return;
     loadUserData();
@@ -257,7 +274,7 @@ export default function YouTubeNoADs() {
   };
 
   // ==========================================
-  // 3. ENGINE: CARGA DE DATOS DEL USUARIO (SERVIDOR, PLAN)
+  // 3. ENGINE: CARGA DE DATOS DEL USUARIO
   // ==========================================
   const loadUserData = async () => {
     if (!user) return;
@@ -265,7 +282,6 @@ export default function YouTubeNoADs() {
     setUi(p => ({ ...p, serverSettingsLoading: true }));
 
     try {
-      // 1. Server ID
       const userServerRef = ref(db, `userServers/${emailKey}`);
       const serverSnap = await get(userServerRef);
       let serverId;
@@ -274,9 +290,10 @@ export default function YouTubeNoADs() {
       } else {
         serverId = generateServerId();
         await set(userServerRef, { serverId, email: user.email });
+        // Guardar relación inversa para búsquedas admin
+        await set(ref(db, `serverToUser/${serverId}`), emailKey);
       }
 
-      // 2. Configuración del servidor
       const serverSettingsRef = ref(db, `servers/${serverId}`);
       const settingsSnap = await get(serverSettingsRef);
       let settings;
@@ -287,7 +304,6 @@ export default function YouTubeNoADs() {
         await set(serverSettingsRef, settings);
       }
 
-      // 3. Plan del usuario
       const planRef = ref(db, `userPlans/${emailKey}`);
       const planSnap = await get(planRef);
       let currentPlan = 'free';
@@ -323,7 +339,6 @@ export default function YouTubeNoADs() {
   };
 
   const updateServerSetting = async (key, value) => {
-    // Verificar si el plan permite ajustes completos
     if (ui.planData.settingsLimited && key !== 'theme') {
       pushNotification("Tu plan Free tiene ajustes limitados. Mejora para desbloquear.", "error");
       return;
@@ -338,18 +353,7 @@ export default function YouTubeNoADs() {
   };
 
   // ==========================================
-  // 4. ENGINE: PROTOCOLO DE PÁNICO V5
-  // ==========================================
-  const triggerPanic = useCallback(() => {
-    window.location.href = ALEX_CONFIG.API.PANIC_APP;
-    setTimeout(() => {
-      window.location.replace("https://www.google.com/search?q=managebac+login");
-      window.close();
-    }, 150);
-  }, []);
-
-  // ==========================================
-  // 5. ENGINE: CONTROL ADMINISTRATIVO
+  // 4. ENGINE: ADMINISTRACIÓN (USUARIOS, SERVIDORES, PLANES)
   // ==========================================
   const handleAdminAuth = (e) => {
     e.preventDefault();
@@ -396,12 +400,37 @@ export default function YouTubeNoADs() {
     const snap = await get(ref(db, `servers/${serverIdInput}`));
     if (snap.exists()) {
       const details = snap.val();
+      // Buscar email del dueño
+      const userSnap = await get(ref(db, `serverToUser/${serverIdInput}`));
+      let ownerEmail = null;
+      if (userSnap.exists()) {
+        ownerEmail = userSnap.val(); // es la clave sanitizada
+        // Podríamos intentar recuperar el email original desde la whitelist o similar, pero es suficiente la clave
+      }
+      setUi(p => ({...p, serverDetails: details, currentLookupId: serverIdInput, serverOwnerEmail: ownerEmail}));
       pushNotification(`Servidor ${serverIdInput} encontrado`, "success");
       addLog(`ADMIN: Consultó servidor ${serverIdInput}`);
-      return details;
     } else {
       pushNotification(`Servidor ${serverIdInput} no encontrado`, "error");
-      return null;
+    }
+  };
+
+  const assignPlanToServer = async (planKey) => {
+    if (!ui.serverOwnerEmail) {
+      pushNotification("No se pudo determinar el dueño del servidor", "error");
+      return;
+    }
+    const emailKey = ui.serverOwnerEmail;
+    await set(ref(db, `userPlans/${emailKey}`), planKey);
+    pushNotification(`Plan ${ALEX_CONFIG.PLANS[planKey].name} asignado al servidor`, "success");
+    addLog(`ADMIN: Asignó plan ${planKey} al servidor ${ui.currentLookupId}`);
+    // Refrescar datos del usuario admin no necesario, pero si coincide con el admin logueado, actualizar
+    if (user && sanitizeEmail(user.email) === emailKey) {
+      setUi(p => ({
+        ...p,
+        currentPlan: planKey,
+        planData: ALEX_CONFIG.PLANS[planKey]
+      }));
     }
   };
 
@@ -415,7 +444,7 @@ export default function YouTubeNoADs() {
   };
 
   // ==========================================
-  // 6. ENGINE: BÚSQUEDA Y REPRODUCCIÓN (SOLO YOUTUBE)
+  // 5. ENGINE: BÚSQUEDA Y REPRODUCCIÓN CON LÍMITES
   // ==========================================
   const searchMedia = async (e) => {
     if (e) e.preventDefault();
@@ -434,6 +463,31 @@ export default function YouTubeNoADs() {
       pushNotification("ERROR DE CONEXIÓN API", "error");
     }
     setUi(p => ({...p, loading: false}));
+  };
+
+  const handleVideoSelect = async (videoId) => {
+    // Obtener duración del vídeo
+    try {
+      const url = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${videoId}&key=${ALEX_CONFIG.API.YOUTUBE}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.items && data.items.length > 0) {
+        const durationIso = data.items[0].contentDetails.duration;
+        const durationSec = parseISO8601Duration(durationIso);
+
+        // Verificar límites del plan
+        const exceeded = cpuUsagePercent > ui.planData.cpuPercent || networkUsageTotal > ui.planData.networkMB;
+        if (exceeded && durationSec > 300) {
+          // Mostrar mensaje y no reproducir
+          pushNotification("Tu plan ha excedido los límites. Solo puedes ver vídeos de 5 minutos o menos. Mejora tu plan para eliminar restricciones.", "error");
+          return;
+        }
+      }
+    } catch (err) {
+      console.error("Error obteniendo duración del vídeo", err);
+      // Si falla, permitimos reproducción por defecto
+    }
+    setUi(p => ({...p, activeMedia: videoId}));
   };
 
   const pushNotification = (text, type) => {
@@ -479,9 +533,6 @@ export default function YouTubeNoADs() {
           </div>
         ))}
       </div>
-
-      {/* BOTÓN DE PÁNICO */}
-      <button onClick={triggerPanic} style={Styles.PanicButton}>PÁNICO</button>
 
       {/* FLUJO DE LOGIN / DASHBOARD */}
       {!accessGranted ? (
@@ -560,6 +611,7 @@ export default function YouTubeNoADs() {
 
             <div style={Styles.NavUser}>
                <img src={user.photoURL} style={Styles.UserAvatar} alt="u" />
+               <button onClick={() => signOut(auth)} style={Styles.LogoutBtn}>Cerrar sesión</button>
                <button onClick={() => setUi(p => ({...p, showAdminLogin: true}))} style={Styles.AdminCircle}>A</button>
             </div>
           </nav>
@@ -573,7 +625,7 @@ export default function YouTubeNoADs() {
                 {!ui.activeMedia ? (
                   <div style={Styles.MediaGrid}>
                     {ui.results.map((v, i) => (
-                      <div key={i} style={Styles.MediaCard} onClick={() => setUi(p => ({...p, activeMedia: v.id.videoId}))}>
+                      <div key={i} style={Styles.MediaCard} onClick={() => handleVideoSelect(v.id.videoId)}>
                         <div style={Styles.ThumbWrap}>
                           <img src={v.snippet.thumbnails.high.url} style={Styles.Thumb} alt="t" />
                           <div style={Styles.PlayOverlay}>REPRODUCIR XL</div>
@@ -681,13 +733,13 @@ export default function YouTubeNoADs() {
                 <div style={Styles.MetricBox}>
                   <div style={Styles.MetricHeader}>
                     <span>🧠 Uso de CPU</span>
-                    <span>{Math.min(cpuUsagePercent, ui.planData.cpuPercent).toFixed(1)}% / {ui.planData.cpuPercent}%</span>
+                    <span>{Math.min(metrics.cpu, ui.planData.cpuPercent).toFixed(1)}% / {ui.planData.cpuPercent}%</span>
                   </div>
                   <div style={Styles.ProgressBarBg}>
                     <div style={{
                       ...Styles.ProgressBarFill,
-                      width: `${Math.min((cpuUsagePercent / ui.planData.cpuPercent) * 100, 100)}%`,
-                      background: cpuUsagePercent > ui.planData.cpuPercent ? '#ff0000' : '#00ff41'
+                      width: `${Math.min((metrics.cpu / ui.planData.cpuPercent) * 100, 100)}%`,
+                      background: metrics.cpu > ui.planData.cpuPercent ? '#ff0000' : '#00ff41'
                     }}></div>
                   </div>
                 </div>
@@ -695,20 +747,21 @@ export default function YouTubeNoADs() {
                 <div style={Styles.MetricBox}>
                   <div style={Styles.MetricHeader}>
                     <span>📡 Network (datos transferidos)</span>
-                    <span>{networkUsageTotal.toFixed(2)} MB / {ui.planData.networkMB} MB</span>
+                    <span>{metrics.network.toFixed(2)} MB / {ui.planData.networkMB} MB</span>
                   </div>
                   <div style={Styles.ProgressBarBg}>
                     <div style={{
                       ...Styles.ProgressBarFill,
-                      width: `${Math.min((networkUsageTotal / ui.planData.networkMB) * 100, 100)}%`,
-                      background: networkUsageTotal > ui.planData.networkMB ? '#ff0000' : '#00ff41'
+                      width: `${Math.min((metrics.network / ui.planData.networkMB) * 100, 100)}%`,
+                      background: metrics.network > ui.planData.networkMB ? '#ff0000' : '#00ff41'
                     }}></div>
                   </div>
                 </div>
 
                 <div style={{marginTop: '30px', color: '#666', fontSize: '12px'}}>
                   * El uso de CPU se mide en tiempo real basado en el renderizado.<br/>
-                  * El tráfico de red incluye todos los recursos descargados por la app.
+                  * El tráfico de red incluye todos los recursos descargados por la app.<br/>
+                  * Si excedes los límites, solo podrás ver vídeos de 5 minutos o menos hasta que mejores tu plan.
                 </div>
               </div>
             )}
@@ -828,13 +881,7 @@ export default function YouTubeNoADs() {
                 <h3>🔍 CONSULTAR SERVIDOR POR ID</h3>
                 <div style={Styles.AdminActions}>
                   <input ref={adminServerIdRef} placeholder="Ej: WY-ISM-KEM-KDM" style={Styles.AdmInput} />
-                  <button onClick={async () => {
-                    const id = adminServerIdRef.current.value;
-                    const details = await lookupServer(id);
-                    if (details) {
-                      setUi(p => ({...p, serverDetails: details, currentLookupId: id}));
-                    }
-                  }} style={Styles.AddBtn}>BUSCAR</button>
+                  <button onClick={() => lookupServer(adminServerIdRef.current.value)} style={Styles.AddBtn}>BUSCAR</button>
                 </div>
                 {ui.serverDetails && (
                   <div style={Styles.ServerDetailsBox}>
@@ -847,6 +894,21 @@ export default function YouTubeNoADs() {
                         </div>
                       ))}
                     </div>
+                    {ui.serverOwnerEmail && (
+                      <div style={{marginTop: '25px'}}>
+                        <h4>Asignar plan al servidor</h4>
+                        <div style={{display: 'flex', gap: '10px', alignItems: 'center'}}>
+                          <select id="planSelector" style={Styles.AdmInput}>
+                            {Object.keys(ALEX_CONFIG.PLANS).map(k => (
+                              <option key={k} value={k}>{ALEX_CONFIG.PLANS[k].name}</option>
+                            ))}
+                          </select>
+                          <button onClick={() => assignPlanToServer(document.getElementById('planSelector').value)} style={Styles.AddBtn}>
+                            ACTUALIZAR PLAN
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -859,7 +921,7 @@ export default function YouTubeNoADs() {
 }
 
 // ==========================================
-// ARQUITECTURA DE ESTILOS (SISTEMA DE DISEÑO)
+// ARQUITECTURA DE ESTILOS
 // ==========================================
 const Styles = {
   AppBody: { height: '100vh', display: 'flex', flexDirection: 'column', background: '#000', color: '#fff', fontFamily: "'Inter', sans-serif", overflow: 'hidden' },
@@ -886,12 +948,10 @@ const Styles = {
   SearchContainer: { flex: 1, maxWidth: '500px', margin: '0 40px', position: 'relative' },
   SearchInput: { width: '100%', background: '#050505', border: '1px solid #222', borderRadius: '15px', padding: '15px 25px', color: '#fff', outline: 'none' },
   SearchBtn: { position: 'absolute', right: '15px', top: '12px', background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px' },
-  NavUser: { display: 'flex', alignItems: 'center', gap: '20px' },
+  NavUser: { display: 'flex', alignItems: 'center', gap: '15px' },
   UserAvatar: { width: '45px', height: '45px', borderRadius: '50%', border: '2px solid #111' },
   AdminCircle: { width: '45px', height: '45px', borderRadius: '50%', background: '#111', border: 'none', color: '#fff', fontWeight: 'bold', cursor: 'pointer' },
-
-  // PANIC
-  PanicButton: { position: 'fixed', bottom: '40px', right: '40px', background: '#ff0000', color: '#fff', border: 'none', width: '120px', height: '120px', borderRadius: '50%', fontWeight: '900', cursor: 'pointer', zIndex: 100000, boxShadow: '0 0 50px rgba(255,0,0,0.5)', animation: 'pulse 2s infinite' },
+  LogoutBtn: { background: '#222', color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '8px', cursor: 'pointer', fontSize: '12px' },
 
   // CONTENT
   Content: { flex: 1, overflowY: 'auto', padding: '40px' },
