@@ -18,7 +18,7 @@ import {
  * - DYNAMIC CPU/NETWORK MONITORING
  * - PLAN-BASED VIDEO DURATION LIMITER (max 5 min si excede)
  * - ADMIN CAN ASSIGN PLANS TO EMAILS (WITH 25s UPDATE DELAY)
- * - CONSOLE WITH GRAPHS & TERMINAL LOGS
+ * - CONSOLE WITH GRAPHS, TERMINAL & FILES (package.json)
  * ============================================================================
  */
 
@@ -78,6 +78,31 @@ const ALEX_CONFIG = {
     }
   }
 };
+
+const PACKAGE_JSON_CONTENT = `{
+  "name": "youtube-noads-server",
+  "version": "13.5.0",
+  "description": "Servidor de streaming sin anuncios",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.6.1",
+    "axios": "^1.4.0",
+    "firebase": "^10.7.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "author": "Alex Hub Ultra",
+  "license": "ISC"
+}`;
 
 // --- INICIALIZACIÓN DE SERVICIOS ---
 const app = initializeApp(ALEX_CONFIG.FIREBASE);
@@ -195,6 +220,7 @@ export default function YouTubeNoADs() {
   const [consoleLogs, setConsoleLogs] = useState([]);
   const [consoleStatus, setConsoleStatus] = useState('stopped'); // 'stopped' | 'starting' | 'running'
   const [consoleLoadingDots, setConsoleLoadingDots] = useState('');
+  const [consoleTab, setConsoleTab] = useState('monitor'); // 'monitor', 'terminal', 'files'
 
   // --- REFS ---
   const videoRef = useRef(null);
@@ -474,7 +500,7 @@ export default function YouTubeNoADs() {
     return () => clearTimeout(timer);
   }, [ui.updatingPlan, ui.updateCountdown]);
 
-  // --- MANEJO DE LA CONSOLA DE LOGS ---
+  // --- MANEJO DE LA CONSOLA DE LOGS (INICIO 15s) ---
   const startConsole = () => {
     setConsoleStatus('starting');
     setConsoleLogs([]);
@@ -482,24 +508,53 @@ export default function YouTubeNoADs() {
     const dotsInterval = setInterval(() => {
       setConsoleLoadingDots(prev => prev.length >= 3 ? '' : prev + '.');
     }, 500);
-    // Simular arranque de 5 segundos
+    
+    const installationSteps = [
+      '[SYSTEM] Preparando instalación de dependencias...',
+      '[SYSTEM] Leyendo package.json...',
+      '[NPM] Instalando express@4.18.2...',
+      '[NPM] Instalando socket.io@4.6.1...',
+      '[NPM] Instalando axios@1.4.0...',
+      '[NPM] Instalando firebase@10.7.1...',
+      '[NPM] Instalando cors@2.8.5...',
+      '[NPM] Instalando dotenv@16.3.1...',
+      '[NPM] Instalando uuid@9.0.0...',
+      '[NPM] Instalando nodemon@3.0.1 (dev)...',
+      '[NPM] Todas las dependencias instaladas correctamente.',
+      '[SYSTEM] Compilando módulos...',
+      '[SYSTEM] Iniciando servidor...',
+      '[SERVICES] Servidor activo en puerto 3000.',
+      '[CONSOLE] Consola de monitorización activada.'
+    ];
+    const totalSteps = installationSteps.length;
+    const maxTime = 15000; // 15 segundos
+    const stepDelay = maxTime / totalSteps;
+    let step = 0;
+    
+    const addLogInterval = setInterval(() => {
+      if (step < totalSteps) {
+        const time = new Date().toLocaleTimeString();
+        setConsoleLogs(prev => [...prev, { time, msg: installationSteps[step] }]);
+        step++;
+      } else {
+        clearInterval(addLogInterval);
+      }
+    }, stepDelay);
+    
     setTimeout(() => {
       clearInterval(dotsInterval);
+      clearInterval(addLogInterval);
       setConsoleLoadingDots('');
       setConsoleStatus('running');
-      const baseLogs = [
-        { time: new Date().toLocaleTimeString(), msg: '[SYSTEM] Iniciando servicios...' },
-        { time: new Date().toLocaleTimeString(), msg: '[CORE] Cargando módulos del kernel...' },
-        { time: new Date().toLocaleTimeString(), msg: '[NETWORK] Configurando interfaz de red...' },
-        { time: new Date().toLocaleTimeString(), msg: '[SECURITY] Verificando certificados SSL...' },
-        { time: new Date().toLocaleTimeString(), msg: '[DATABASE] Conectando a Firebase RTDB...' },
-        { time: new Date().toLocaleTimeString(), msg: '[SERVICES] Todos los servicios iniciados correctamente.' },
-        { time: new Date().toLocaleTimeString(), msg: '[CONSOLE] Consola de monitorización activada.' },
-      ];
-      setConsoleLogs(baseLogs);
+      // Asegurar que todos los logs se hayan añadido
+      if (step < totalSteps) {
+        const remaining = installationSteps.slice(step);
+        const time = new Date().toLocaleTimeString();
+        setConsoleLogs(prev => [...prev, ...remaining.map(msg => ({ time, msg }))]);
+      }
       pushNotification("Consola iniciada correctamente", "success");
       addLog("USER: Inició la consola de monitorización");
-    }, 5000);
+    }, maxTime);
   };
 
   const addLog = (msg) => {
@@ -534,6 +589,11 @@ export default function YouTubeNoADs() {
   };
 
   const handleVideoSelect = async (videoId) => {
+    // Bloquear si la consola no está activa
+    if (consoleStatus !== 'running') {
+      pushNotification("Debes iniciar la consola primero. Ve a la pestaña Consola y haz clic en START.", "error");
+      return;
+    }
     try {
       const url = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${videoId}&key=${ALEX_CONFIG.API.YOUTUBE}`;
       const res = await fetch(url);
@@ -819,61 +879,95 @@ export default function YouTubeNoADs() {
                 <h2 style={Styles.SettingsTitle}>📊 CONSOLE DE RENDIMIENTO</h2>
                 <p style={{color: '#888', marginBottom: '30px'}}>Plan actual: <strong style={{color: ui.theme}}>{ui.planData.name} ({ui.planData.price})</strong></p>
                 
-                <div style={{ display: 'flex', justifyContent: 'center', gap: '80px', marginBottom: '40px', flexWrap: 'wrap' }}>
-                  <CircularProgress 
-                    value={metrics.cpu} 
-                    max={ui.planData.cpuPercent} 
-                    color={metrics.cpu > ui.planData.cpuPercent ? '#ff0000' : '#00ff41'} 
-                    label="CPU" 
-                  />
-                  <CircularProgress 
-                    value={metrics.network} 
-                    max={ui.planData.networkMB} 
-                    color={metrics.network > ui.planData.networkMB ? '#ff0000' : '#00ff41'} 
-                    label="Network (MB)" 
-                  />
+                {/* PESTAÑAS DE LA CONSOLA */}
+                <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', borderBottom: '1px solid #222', paddingBottom: '10px' }}>
+                  {['monitor', 'terminal', 'files'].map(tab => (
+                    <button
+                      key={tab}
+                      onClick={() => setConsoleTab(tab)}
+                      style={consoleTab === tab ? {...Styles.Tab, background: ui.theme, color: '#fff'} : Styles.Tab}
+                    >
+                      {tab === 'monitor' ? 'Monitor' : tab === 'terminal' ? 'Terminal' : 'Files'}
+                    </button>
+                  ))}
                 </div>
 
-                {/* CONSOLA DE LOGS ESTILO TERMINAL */}
-                <div style={Styles.TerminalContainer}>
-                  <div style={Styles.TerminalHeader}>
-                    <span>🖥️ CONSOLA DE SERVICIO</span>
-                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                      {consoleStatus === 'running' && <span style={{ color: '#00ff41', fontSize: '12px' }}>● ACTIVO</span>}
-                      {consoleStatus === 'starting' && <span style={{ color: '#ffaa00', fontSize: '12px' }}>● INICIANDO{consoleLoadingDots}</span>}
-                      {consoleStatus === 'stopped' && <span style={{ color: '#ff0000', fontSize: '12px' }}>● DETENIDO</span>}
-                      <button 
-                        onClick={startConsole} 
-                        style={Styles.StartBtn}
-                        disabled={consoleStatus === 'starting'}
-                      >
-                        {consoleStatus === 'running' ? 'REINICIAR' : 'START'}
-                      </button>
+                {/* CONTENIDO SEGÚN PESTAÑA */}
+                {consoleTab === 'monitor' && (
+                  <div style={{ display: 'flex', justifyContent: 'center', gap: '80px', marginBottom: '40px', flexWrap: 'wrap' }}>
+                    <CircularProgress 
+                      value={metrics.cpu} 
+                      max={ui.planData.cpuPercent} 
+                      color={metrics.cpu > ui.planData.cpuPercent ? '#ff0000' : '#00ff41'} 
+                      label="CPU" 
+                    />
+                    <CircularProgress 
+                      value={metrics.network} 
+                      max={ui.planData.networkMB} 
+                      color={metrics.network > ui.planData.networkMB ? '#ff0000' : '#00ff41'} 
+                      label="Network (MB)" 
+                    />
+                  </div>
+                )}
+
+                {consoleTab === 'terminal' && (
+                  <div style={Styles.TerminalContainer}>
+                    <div style={Styles.TerminalHeader}>
+                      <span>🖥️ CONSOLA DE SERVICIO</span>
+                      <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                        {consoleStatus === 'running' && <span style={{ color: '#00ff41', fontSize: '12px' }}>● ACTIVO</span>}
+                        {consoleStatus === 'starting' && <span style={{ color: '#ffaa00', fontSize: '12px' }}>● INICIANDO{consoleLoadingDots}</span>}
+                        {consoleStatus === 'stopped' && <span style={{ color: '#ff0000', fontSize: '12px' }}>● DETENIDO</span>}
+                        <button 
+                          onClick={startConsole} 
+                          style={Styles.StartBtn}
+                          disabled={consoleStatus === 'starting'}
+                        >
+                          {consoleStatus === 'running' ? 'REINICIAR' : 'START'}
+                        </button>
+                      </div>
+                    </div>
+                    <div style={Styles.TerminalBody}>
+                      {consoleStatus === 'starting' && (
+                        <div style={{ textAlign: 'center', padding: '40px' }}>
+                          <div className="alex-loader" style={{ margin: '0 auto 20px' }}></div>
+                          <p style={{ color: '#ffaa00', fontFamily: 'monospace' }}>Iniciando servicios del sistema{consoleLoadingDots}</p>
+                        </div>
+                      )}
+                      {consoleStatus === 'stopped' && (
+                        <div style={{ textAlign: 'center', padding: '40px', color: '#555', fontFamily: 'monospace' }}>
+                          Consola detenida. Presione START para iniciar los servicios.
+                        </div>
+                      )}
+                      {consoleStatus === 'running' && consoleLogs.map((log, i) => (
+                        <div key={i} style={Styles.LogEntry}>
+                          <span style={{ color: '#666', marginRight: '10px' }}>[{log.time}]</span>
+                          <span style={{ color: '#00ff41' }}>{log.msg}</span>
+                        </div>
+                      ))}
+                      {consoleStatus === 'running' && (
+                        <div style={{ color: '#00ff41', fontFamily: 'monospace' }}>root@youtube-noads:~$ <span className="console-cursor">▋</span></div>
+                      )}
                     </div>
                   </div>
-                  <div style={Styles.TerminalBody}>
-                    {consoleStatus === 'starting' && (
-                      <div style={{ textAlign: 'center', padding: '40px' }}>
-                        <div className="alex-loader" style={{ margin: '0 auto 20px' }}></div>
-                        <p style={{ color: '#ffaa00', fontFamily: 'monospace' }}>Iniciando servicios del sistema{consoleLoadingDots}</p>
+                )}
+
+                {consoleTab === 'files' && (
+                  <div style={Styles.FilesContainer}>
+                    <h4 style={{ color: '#aaa', marginBottom: '15px' }}>📁 Archivos del servidor</h4>
+                    <div style={Styles.FileList}>
+                      <div style={Styles.FileItem}>
+                        <span>📄 package.json</span>
+                        <span style={{ color: '#555', fontSize: '11px' }}> (solo lectura)</span>
                       </div>
-                    )}
-                    {consoleStatus === 'stopped' && (
-                      <div style={{ textAlign: 'center', padding: '40px', color: '#555', fontFamily: 'monospace' }}>
-                        Consola detenida. Presione START para iniciar los servicios.
-                      </div>
-                    )}
-                    {consoleStatus === 'running' && consoleLogs.map((log, i) => (
-                      <div key={i} style={Styles.LogEntry}>
-                        <span style={{ color: '#666', marginRight: '10px' }}>[{log.time}]</span>
-                        <span style={{ color: '#00ff41' }}>{log.msg}</span>
-                      </div>
-                    ))}
-                    {consoleStatus === 'running' && (
-                      <div style={{ color: '#00ff41', fontFamily: 'monospace' }}>root@youtube-noads:~$ <span className="console-cursor">▋</span></div>
-                    )}
+                    </div>
+                    <div style={Styles.FileViewer}>
+                      <pre style={{ color: '#00ff41', fontFamily: 'monospace', fontSize: '13px', background: '#000', padding: '20px', borderRadius: '10px', overflowX: 'auto', whiteSpace: 'pre-wrap' }}>
+                        {PACKAGE_JSON_CONTENT}
+                      </pre>
+                    </div>
                   </div>
-                </div>
+                )}
               </div>
             )}
           </main>
@@ -1116,11 +1210,15 @@ const Styles = {
 
   // CONSOLE
   ConsolePanel: { maxWidth: '900px', margin: '0 auto', padding: '30px', background: '#050505', borderRadius: '30px', border: '1px solid #111' },
-  TerminalContainer: { marginTop: '30px', background: '#0a0a0a', borderRadius: '15px', border: '1px solid #222', overflow: 'hidden' },
+  TerminalContainer: { marginTop: '20px', background: '#0a0a0a', borderRadius: '15px', border: '1px solid #222', overflow: 'hidden' },
   TerminalHeader: { background: '#111', padding: '15px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #222', fontFamily: 'monospace' },
   StartBtn: { background: '#00ff41', color: '#000', border: 'none', padding: '8px 18px', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer', fontFamily: 'monospace' },
   TerminalBody: { padding: '20px', maxHeight: '300px', overflowY: 'auto', fontFamily: 'monospace', fontSize: '13px', background: '#000', minHeight: '150px' },
   LogEntry: { padding: '4px 0', borderBottom: '1px solid #0a0a0a' },
+  FilesContainer: { marginTop: '20px' },
+  FileList: { marginBottom: '15px' },
+  FileItem: { background: '#0a0a0a', padding: '10px 15px', borderRadius: '8px', marginBottom: '5px', fontFamily: 'monospace', color: '#ccc' },
+  FileViewer: { marginTop: '10px' },
 
   // PLANS
   PlansCard: { background: '#0a0a0a', padding: '60px', borderRadius: '40px', border: '1px solid #222', maxWidth: '900px', width: '100%', textAlign: 'center' },
